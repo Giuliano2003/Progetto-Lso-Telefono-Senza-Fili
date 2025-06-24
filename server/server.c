@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <uuid/uuid.h>
+#include <glib-2.0/glib.h>
 
 #define PORT 8080
 #define MAX_PLAYERS 10
@@ -19,7 +20,7 @@ typedef struct Lobby Lobby;
 
 typedef struct
 {
-    uuid_t id;
+    char id[37];
     char username[32];
     int socket;
     bool isInLobby;
@@ -29,7 +30,7 @@ typedef struct
 
 struct Lobby
 {
-    uuid_t id;
+    char id[37];
     Player *host;
     int max_players;
     Player *players[MAX_PLAYERS];
@@ -44,29 +45,43 @@ typedef struct {
     int player_count;
 } LobbyDto;
 
+
+typedef struct {
+    char* buffer;
+    int idx;
+} BufferContext;
+
+void delete_player(gpointer data) {
+    Player* p = (Player*) data;
+    g_free(p);
+}
+
+void delete_lobby(gpointer data) {
+    Lobby* lob = (Lobby*) data;
+    g_free(lob);
+}
+
+void fill_buffer(gpointer key, gpointer value, gpointer bufferContext) {
+    Lobby* lobby = (Lobby*) value;
+    BufferContext* bufCont = (BufferContext*) bufferContext;
+
+    snprintf(bufCont->buffer + bufCont->idx*(sizeof(LobbyDto)), sizeof(LobbyDto), "%s %s %d %d\n",
+                                lobby->id,
+                                lobby->host->username,
+                                lobby->max_players,
+                                lobby->player_count);
+    bufCont->idx++;
+}
+
 //TODO sostituisci con hashmap
-Player *players[MAX_PLAYERS];
-Lobby *lobbies[MAX_LOBBIES];
-int global_player_count = 0;
-int lobby_count = 0;
+GHashTable* players;
+GHashTable* lobbies;
 
 pthread_mutex_t lobbies_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t global_players_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void print_lobby(const Lobby* lobby){
-    char id_str[37];
-    uuid_unparse(lobby->id,id_str);
-    printf("Lobby:id %s \n",id_str);
-}
-
-Lobby* find_lobby(uuid_t id_lobby){
-    for (unsigned int i = 0; i < lobby_count; i++)
-    {
-        if (uuid_compare(lobbies[i]->id,id_lobby) == 0){
-            return lobbies[i];
-        }
-    }
-    return NULL;
+    printf("Lobby:id %s \n",lobby->id);
 }
 
 void *handle_client(void *arg)
@@ -77,15 +92,17 @@ void *handle_client(void *arg)
     recv(client_socket, buffer, sizeof(buffer), 0);
     printf("Nuovo player: %s\n", buffer);
 
-    Player *p = malloc(sizeof(Player));
-    uuid_generate_random(p->id);
+    Player *p = g_new(Player, 1);
+    uuid_t id;
+    uuid_generate_random(id);
+    uuid_unparse(id, p->id);
     strcpy(p->username, buffer);
     p->socket = client_socket;
     p->isInLobby = false;
     p->lobby_hosted = NULL;
     pthread_mutex_init(&(p->socket_mutex), NULL);
     pthread_mutex_lock(&global_players_mutex);
-    players[global_player_count++] = p;
+    g_hash_table_insert(players, g_strdup(p->id), p);
     pthread_mutex_unlock(&global_players_mutex);
 
     sprintf(buffer, "Benvenuto,! Il tuo username è %s\n", p->username);
@@ -113,15 +130,17 @@ void *handle_client(void *arg)
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                if(lobby_count + 1 > MAX_LOBBIES){
+                if(g_hash_table_size(lobbies) + 1 > MAX_LOBBIES){
                     char error_messagge[] = "Non puoi creare la lobby perche abbiamo finito i posti!";
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket,error_messagge,sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                Lobby *lobby = malloc(sizeof(Lobby));
-                uuid_generate_random(lobby->id);
+                Lobby *lobby = g_new(Lobby, 1);
+                uuid_t id;
+                uuid_generate_random(id);
+                uuid_unparse(id, lobby->id);
                 pthread_mutex_init(&(lobby->players_mutex), NULL);
                 lobby->host = p;
                 lobby->max_players = MAX_PLAYERS; //TODO setta il max_players passato dal client
@@ -130,12 +149,11 @@ void *handle_client(void *arg)
                 lobby->players[lobby->player_count] = lobby->host; //setto host a 0
                 lobby->player_count++; // aumento
                 pthread_mutex_lock(&lobbies_mutex);
-                lobbies[lobby_count] = lobby;
-                lobby_count++;
+                g_hash_table_insert(lobbies, g_strdup(lobby->id), lobby);
                 pthread_mutex_unlock(&lobbies_mutex);
                 char success_lobby[] = "Hai creato la lobby con successo!";
                 print_lobby(lobby);
-                printf("lobby_count: %d\n", lobby_count);
+                printf("lobby_count: %d\n", g_hash_table_size(lobbies));
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket,success_lobby,sizeof(success_lobby),0);
                 pthread_mutex_unlock(&(p->socket_mutex));
@@ -143,7 +161,6 @@ void *handle_client(void *arg)
             }
             case OP_JOIN_LOBBY : {
                 char lobby_id[37];
-                uuid_t lobby_uuid;
                 strncpy(lobby_id,buffer+4,36);
                 lobby_id[36]='\0';
                 if(p->isInLobby){
@@ -153,8 +170,8 @@ void *handle_client(void *arg)
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                uuid_parse(lobby_id,lobby_uuid);
-                Lobby *lobby = find_lobby(lobby_uuid);
+
+                Lobby *lobby = (Lobby *) g_hash_table_lookup(lobbies, lobby_id);
                 if(!lobby){
                     char error_messagge[] = "Non abbiamo trovato la lobby!";
                     pthread_mutex_lock(&(p->socket_mutex));
@@ -182,29 +199,19 @@ void *handle_client(void *arg)
                 break;
             }
             case OP_GET_LOBBIES: {
-                if (lobby_count <= 0) {
+                if (g_hash_table_size(lobbies) <= 0) {
                     char error_messagge[] = "Non esistono lobby al momento";
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                printf("in OP_GET_LOBBIES lobby_count: %d\n", lobby_count);
-                char* buffer = malloc(lobby_count*(sizeof(LobbyDto)+4)+1);
-                for (int i = 0; i < lobby_count; i++) {
-                    LobbyDto lob;
-                    uuid_unparse(lobbies[i]->id, lob.id);
-                    strcpy(lob.host_username, lobbies[i]->host->username);
-                    lob.player_count = lobbies[i]->player_count;
-                    lob.max_players = lobbies[i]->max_players;
+                printf("in OP_GET_LOBBIES lobby_count: %d\n", g_hash_table_size(lobbies));
+                char* buffer = malloc(g_hash_table_size(lobbies)*(sizeof(LobbyDto)+4)+1);
+                BufferContext bufferContext = {buffer, 0};
+                g_hash_table_foreach(lobbies, fill_buffer, &bufferContext);
 
-                    snprintf(buffer + i*(sizeof(LobbyDto)), sizeof(LobbyDto), "%s %s %d %d\n",
-                                lob.id,
-                                lob.host_username,
-                                lob.max_players,
-                                lob.player_count);
-                }
-                buffer[lobby_count*(sizeof(LobbyDto))] = '\0';
+                buffer[g_hash_table_size(lobbies)*(sizeof(LobbyDto))] = '\0';
                 printf("il contenuto del buffer è:\n%s\n", buffer);
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, buffer, strlen(buffer), 0);
@@ -238,28 +245,24 @@ void *handle_client(void *arg)
             pthread_mutex_unlock(&(p->socket_mutex));
             p->isInLobby = false;
         }
-        free(lobby);
         pthread_mutex_lock(&lobbies_mutex);
-        lobby_count--;
+        g_hash_table_remove(lobbies, lobby->id);
         pthread_mutex_unlock(&lobbies_mutex);
-        //TODO rimuovi lobby->id da lobbies
         lobby = NULL;  
     }
-    
-    //TODO dealloca player
-    pthread_mutex_lock(&global_players_mutex);
-    global_player_count--;
-    pthread_mutex_unlock(&global_players_mutex);
 
-    pthread_mutex_lock(&lobbies_mutex);
-    free(p);
-    pthread_mutex_unlock(&lobbies_mutex);
+    pthread_mutex_lock(&global_players_mutex);
+    g_hash_table_remove(players, p->id);
+    pthread_mutex_unlock(&global_players_mutex);
 
     pthread_exit(NULL);
 }
 
 int main()
 {
+    players = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, delete_player);
+    lobbies = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, delete_lobby);
+
     int server_fd, new_socket, *client_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
