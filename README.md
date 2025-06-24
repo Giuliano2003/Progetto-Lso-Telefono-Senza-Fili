@@ -8,13 +8,13 @@ Un sistema multi-client, composto da:
 Per compilare ed eseguire il sistema, prima installare le seguenti librerie:
 
 ```bash
-sudo apt-get install uuid-dev
+sudo apt-get install uuid-dev libglib2.0-dev
 ```
 ## Compilazione ed Esecuzione
 
 ### Compilare il server
 
-Aprire il terminale nella cartella client-server del progetto ed eseguire:
+Aprire il terminale nella cartella ./server del progetto ed eseguire:
 
 ```bash
 gcc server.c -o server -luuid
@@ -27,9 +27,9 @@ gcc server.c -o server -luuid
 
 ### Compilare ed eseguire il client
 
-Aprire il terminale nella cartella client-server del progetto ed eseguire:
+Aprire il terminale nella cartella ./client del progetto ed eseguire:
 
 ```bash
-python3 client_guy.py
+python3 client.py
 ```
 
