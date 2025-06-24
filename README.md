@@ -17,7 +17,7 @@ sudo apt-get install uuid-dev libglib2.0-dev
 Aprire il terminale nella cartella ./server del progetto ed eseguire:
 
 ```bash
-gcc server.c -o server -luuid
+gcc server.c -o server -luuid $(pkg-config --cflags --libs glib-2.0)
 ```
 
 ### Esecuzione
