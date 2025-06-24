@@ -4,6 +4,12 @@ Un sistema multi-client, composto da:
 - **Server** scritto in C
 - **Client** scritto in Python
 
+### Installazione Librerie
+Per compilare ed eseguire il sistema, prima installare le seguenti librerie:
+
+```bash
+sudo apt-get install uuid-dev
+```
 ## Compilazione ed Esecuzione
 
 ### Compilare il server
