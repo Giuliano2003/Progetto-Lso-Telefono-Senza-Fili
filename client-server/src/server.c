@@ -87,55 +87,58 @@ void *handle_client(void *arg)
         int op_number=atoi(op);
         switch (op_number)
         {
-        case OP_CREATE_LOBBY:
-            if(p->isInLobby){
-                char error_messagge[] = "Non puoi creare la lobby perche gia sei in una lobby";
-                send(client_socket, error_messagge, sizeof(error_messagge), 0);
+            case OP_CREATE_LOBBY: {
+                if(p->isInLobby){
+                    char error_messagge[] = "Non puoi creare la lobby perche gia sei in una lobby";
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    break;
+                }
+                if(lobby_count + 1 > MAX_LOBBIES){
+                    char error_messagge[] = "Non puoi creare la lobby perche abbiamo finito i posti!";
+                    send(client_socket,error_messagge,sizeof(error_messagge), 0);
+                    break;
+                }
+                Lobby *lobby = malloc(sizeof(Lobby));
+                uuid_generate_random(lobby->id);
+                lobby->host = p;
+                p->isInLobby = true;
+                lobby->players[lobby->player_count] = lobby->host; //setto host a 0
+                lobby->player_count++; // aumento
+                pthread_mutex_lock(&lock);
+                lobbies[lobby_count] = lobby;
+                lobby_count++;
+                pthread_mutex_unlock(&lock);
+                char success_lobby[] = "Hai creato la lobby con successo!";
+                print_lobby(lobby);
+                send(client_socket,success_lobby,sizeof(success_lobby),0);
                 break;
             }
-            if(lobby_count + 1 > MAX_LOBBIES){
-                char error_messagge[] = "Non puoi creare la lobby perche abbiamo finito i posti!";
-                send(client_socket,error_messagge,sizeof(error_messagge), 0);
-                break;
-            }
-            Lobby *lobby = malloc(sizeof(Lobby));
-            uuid_generate_random(lobby->id);
-            lobby->host = p;
-            p->isInLobby = true;
-            lobby->players[lobby->player_count] = lobby->host; //setto host a 0
-            lobby->player_count++; // aumento
-            pthread_mutex_lock(&lock);
-            lobbies[lobby_count] = lobby;
-            lobby_count++;
-            pthread_mutex_unlock(&lock);
-            char success_lobby[] = "Hai creato la lobby con successo!";
-            print_lobby(lobby);
-            send(client_socket,success_lobby,sizeof(success_lobby),0);
-            break;
-        case OP_JOIN_LOBBY :
-            char lobby_id[37];
-            uuid_t lobby_uuid;
-            strncpy(lobby_id,buffer+4,36);
-            lobby_id[36]='\0';
-            if(p->isInLobby){
-                char error_messagge[] = "Non puoi unirti alla lobby perche gia sei in una lobby";
-                send(client_socket, error_messagge, sizeof(error_messagge), 0);
-                break;
-            }
-            uuid_parse(lobby_id,lobby_uuid);
-            Lobby *lobby = find_lobby(lobby_uuid);
-            if(!lobby){
-                char error_messagge[] = "Non abbiamo trovato la lobby!";
-                send(client_socket, error_messagge, sizeof(error_messagge), 0);
-                break;
-            }
-            //TO-DO 1)Vedere se il max players supera il limite; 2)Aggionare max players
-            lobby->players[lobby->player_count] = p;
+            case OP_JOIN_LOBBY : {
+                char lobby_id[37];
+                uuid_t lobby_uuid;
+                strncpy(lobby_id,buffer+4,36);
+                lobby_id[36]='\0';
+                if(p->isInLobby){
+                    char error_messagge[] = "Non puoi unirti alla lobby perche gia sei in una lobby";
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    break;
+                }
+                uuid_parse(lobby_id,lobby_uuid);
+                Lobby *lobby = find_lobby(lobby_uuid);
+                if(!lobby){
+                    char error_messagge[] = "Non abbiamo trovato la lobby!";
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    break;
+                }
+                //TO-DO 1)Vedere se il max players supera il limite; 2)Aggionare max players
+                lobby->players[lobby->player_count] = p;
             
-            break;
-        default:
-            char default_messagge[] = "Non ho capito il tuo messaggio";
-            send(client_socket,default_messagge,sizeof(default_messagge),0);
+                break;
+            }
+            default:{
+                char default_messagge[] = "Non ho capito il tuo messaggio";
+                send(client_socket,default_messagge,sizeof(default_messagge),0);
+            }
         }
     }
 
