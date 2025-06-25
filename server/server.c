@@ -107,7 +107,8 @@ void *handle_client(void *arg)
     int client_socket = *(int *)arg;
     free(arg);
     char buffer[1024];
-    recv(client_socket, buffer, sizeof(buffer), 0);
+    int bytes = recv(client_socket, buffer, sizeof(buffer), 0);
+    buffer[bytes] = '\0';
     printf("Nuovo player: %s\n", buffer);
 
     Player *p = g_new(Player, 1);
