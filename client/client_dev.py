@@ -43,12 +43,6 @@ class ClientGUI:
             self.master.quit()
             return
 
-        username = simpledialog.askstring("Username", "Enter your username:")
-        if username:
-            self.sock.sendall(username.encode())
-        else:
-            self.master.quit()
-
     def send_message(self):
         message = self.entry.get()
         if message:

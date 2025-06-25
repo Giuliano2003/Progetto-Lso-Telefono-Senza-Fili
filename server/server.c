@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,7 @@
 #define OP_JOIN_LOBBY 101
 #define OP_GET_LOBBIES 102
 #define OP_LEAVE_LOBBY 103
+#define OP_ANON_LOGIN 200
 
 typedef struct Lobby Lobby;
 
@@ -102,46 +104,79 @@ void print_lobby(const Lobby* lobby){
     printf("Lobby:id %s \n",lobby->id);
 }
 
+void sanitize_username(char *buffer) {
+    int read_pos = 0;
+    int write_pos = 0;
+    while (buffer[read_pos] != '\0') {
+        if (isalnum(buffer[read_pos])) {
+            buffer[write_pos] = buffer[read_pos];
+            write_pos++;
+        }
+        read_pos++;
+    }
+    buffer[write_pos] = '\0';
+}
+
 void *handle_client(void *arg)
 {
     int client_socket = *(int *)arg;
     free(arg);
     char buffer[1024];
-    int bytes = recv(client_socket, buffer, sizeof(buffer), 0);
-    buffer[bytes] = '\0';
-    printf("Nuovo player: %s\n", buffer);
-
-    Player *p = g_new(Player, 1);
-    uuid_t id;
-    uuid_generate_random(id);
-    uuid_unparse(id, p->id);
-    strcpy(p->username, buffer);
-    p->socket = client_socket;
-    p->lobby = NULL;
-    p->isHost = false;
-    pthread_mutex_init(&(p->socket_mutex), NULL);
-    pthread_mutex_lock(&global_players_mutex);
-    g_hash_table_insert(players, g_strdup(p->id), p);
-    pthread_mutex_unlock(&global_players_mutex);
-
-    sprintf(buffer, "Benvenuto,! Il tuo username è %s\n", p->username);
-    pthread_mutex_lock(&(p->socket_mutex));
-    send(client_socket, buffer, strlen(buffer), 0);
-    pthread_mutex_unlock(&(p->socket_mutex));
-  
+    Player *p = NULL;
     while (1)
     {
         int bytes = recv(client_socket, buffer, sizeof(buffer), 0);
         if (bytes <= 0)
             break;
-        buffer[bytes] = '\0';  
+        buffer[bytes] = '\0';
         char op[4];
-        printf("Player %s (%s): %s\n", p->username, p->id, buffer);
         strncpy(op,buffer,3);
+        op[3] = '\0';
         int op_number=atoi(op);
         switch (op_number)
         {
+            case OP_ANON_LOGIN: {
+                if (p) {
+                    char * msg = "400\nYou are already authenticated!";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                sanitize_username(buffer+4);
+                if (strlen(buffer+4) < 5) {
+                    char * msg = "400\nUsername too short (min: 5)";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                if (strlen(buffer+4) > 15) {
+                    char * msg = "400\nUsername too long (max: 15)";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                p = g_new(Player, 1);
+                uuid_t id;
+                uuid_generate_random(id);
+                uuid_unparse(id, p->id);
+                strcpy(p->username, buffer+4);
+                p->socket = client_socket;
+                p->lobby = NULL;
+                p->isHost = false;
+                pthread_mutex_init(&(p->socket_mutex), NULL);
+                pthread_mutex_lock(&global_players_mutex);
+                g_hash_table_insert(players, g_strdup(p->id), p);
+                pthread_mutex_unlock(&global_players_mutex);
+
+                sprintf(buffer, "Welcome! Your username is %s\n", p->username);
+                pthread_mutex_lock(&(p->socket_mutex));
+                send(client_socket, buffer, strlen(buffer), 0);
+                pthread_mutex_unlock(&(p->socket_mutex));
+                printf("New Player %s (%s)\n", p->username, p->id);
+                break;
+            }
             case OP_CREATE_LOBBY: {
+                if (!p) {
+                    char * msg = "400\nYou must authenticate first!";
+                    send(client_socket, msg, strlen(msg), 0);
+                }
                 if(p->lobby){
                     char error_messagge[] = "400\nYou cannot create a lobby since you already are in one";
                     pthread_mutex_lock(&(p->socket_mutex));
@@ -181,6 +216,10 @@ void *handle_client(void *arg)
                 break;
             }
             case OP_JOIN_LOBBY : {
+                if (!p) {
+                    char * msg = "400\nYou must authenticate first!";
+                    send(client_socket, msg, strlen(msg), 0);
+                }
                 char lobby_id[37];
                 strncpy(lobby_id,buffer+4,36);
                 lobby_id[36]='\0';
@@ -220,6 +259,10 @@ void *handle_client(void *arg)
                 break;
             }
             case OP_GET_LOBBIES: {
+                if (!p) {
+                    char * msg = "400\nYou must authenticate first!";
+                    send(client_socket, msg, strlen(msg), 0);
+                }
                 if (g_hash_table_size(lobbies) <= 0) {
                     char error_messagge[] = "";
                     pthread_mutex_lock(&(p->socket_mutex));
@@ -240,6 +283,10 @@ void *handle_client(void *arg)
                 break;
             }
             case OP_LEAVE_LOBBY: {
+                if (!p) {
+                    char * msg = "400\nYou must authenticate first!";
+                    send(client_socket, msg, strlen(msg), 0);
+                }
                 if (!p->lobby) {
                     char error_messagge[] = "400\nYou are not in a lobby";
                     pthread_mutex_lock(&(p->socket_mutex));
@@ -263,7 +310,12 @@ void *handle_client(void *arg)
                 }
                 break;
             }
-            default:{
+            default: {
+                if (!p) {
+                    char * msg = "400\nYou must authenticate first!";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
                 char default_message[] = "500\nUnknown request";
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, default_message, sizeof(default_message), 0);
