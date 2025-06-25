@@ -1,148 +1,174 @@
 import socket
 import threading
 import tkinter as tk
-from tkinter import simpledialog, scrolledtext, messagebox, Toplevel, Listbox, END
+from tkinter import messagebox
 
-SERVER_HOST = 'localhost'
-SERVER_PORT = 8080
+HOST = 'localhost'
+PORT = 8080
 
-class ClientGUI:
-    def __init__(self, master):
-        self.master = master
-        master.title("Client GUI TCP")
+client_socket = None
+username = ''
+current_lobby_id = ''
+is_host = False
+refreshing = False  # To stop refresh thread when not on home
 
-        self.chat_area = scrolledtext.ScrolledText(master, state='disabled', width=50, height=20)
-        self.chat_area.pack(padx=10, pady=10)
+def connect_to_server():
+    global client_socket
+    try:
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_socket.connect((HOST, PORT))
+    except Exception as e:
+        messagebox.showerror("Connection Error", str(e))
 
-        self.entry = tk.Entry(master, width=40)
-        self.entry.pack(side='left', padx=(10, 0), pady=(0, 10))
+def send_msg(msg):
+    try:
+        client_socket.sendall(msg.encode('utf-8'))
+    except Exception as e:
+        messagebox.showerror("Send Error", str(e))
 
-        self.send_button = tk.Button(master, text="Send", command=self.send_message)
-        self.send_button.pack(side='left', padx=(5, 10), pady=(0, 10))
+def receive_lines():
+    try:
+        data = client_socket.recv(4096).decode('utf-8')
+        return data.strip().split('\n')
+    except Exception as e:
+        messagebox.showerror("Receive Error", str(e))
+        return []
 
-        # Bottone "Crea Lobby"
-        self.create_lobby_button = tk.Button(master, text="Crea Lobby", command=self.create_lobby)
-        self.create_lobby_button.pack(side='left', padx=(5, 10), pady=(0, 10))
+class GameGUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Socket Game")
+        self.geometry("800x400")
+        self.configure(bg='black')
+        self.username = ''
+        self.init_login_frame()
 
-        # Bottone "Mostra Lobby"
-        self.show_lobbies_button = tk.Button(master, text="Mostra Lobby", command=self.show_lobbies)
-        self.show_lobbies_button.pack(side='left', padx=(5, 10), pady=(0, 10))
+    def clear(self):
+        global refreshing
+        refreshing = False  # Stop background refresh
+        for widget in self.winfo_children():
+            widget.destroy()
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def init_login_frame(self):
+        self.clear()
+        frame = tk.Frame(self, bg="white", padx=20, pady=20)
+        frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
-        self.connect_to_server()
+        tk.Label(frame, text="Username").pack()
+        self.username_entry = tk.Entry(frame)
+        self.username_entry.pack(pady=5)
+        tk.Button(frame, text="Play!", command=self.login_action).pack(pady=5)
 
-        self.running = True
-        threading.Thread(target=self.receive_messages, daemon=True).start()
-
-    def connect_to_server(self):
-        try:
-            self.sock.connect((SERVER_HOST, SERVER_PORT))
-        except Exception as e:
-            messagebox.showerror("Connection Error", str(e))
-            self.master.quit()
+    def login_action(self):
+        global username
+        username = self.username_entry.get()
+        if not username:
             return
+        connect_to_server()
+        send_msg(username)  # Send username as first message
+        self.init_home_frame()
 
-        username = simpledialog.askstring("Username", "Enter your username:")
-        if username:
-            self.sock.sendall(username.encode())
-        else:
-            self.master.quit()
 
-    def send_message(self):
-        message = self.entry.get()
-        if message:
-            self.sock.sendall(message.encode())
-            self.entry.delete(0, tk.END)
+    def init_home_frame(self):
+        global refreshing
+        self.clear()
+        refreshing = True
 
-    # Funzione associata a "Crea Lobby"
+        tk.Label(self, text=f"Hello {username}!", fg='white', bg='black').pack(anchor='nw', padx=10, pady=10)
+
+        self.lobby_frame = tk.Frame(self, bg="white")
+        self.lobby_frame.pack(pady=10, padx=20)
+
+        header = tk.Frame(self.lobby_frame, bg='white')
+        header.pack(fill=tk.X)
+        tk.Label(header, text="ID", width=40, anchor='w').pack(side=tk.LEFT)
+        tk.Label(header, text="Host", width=20).pack(side=tk.LEFT)
+        tk.Label(header, text="Players", width=10).pack(side=tk.LEFT)
+
+        self.lobby_list = tk.Frame(self.lobby_frame, bg='white')
+        self.lobby_list.pack()
+
+        tk.Button(self, text="Create a lobby", command=self.create_lobby).pack(pady=10)
+
+        self.fetch_lobbies()
+
+        # Start auto-refresh
+        threading.Thread(target=self.auto_refresh_lobbies, daemon=True).start()
+
+    def fetch_lobbies(self):
+        for widget in self.lobby_list.winfo_children():
+            widget.destroy()
+        send_msg("102")
+        responses = receive_lines()
+        for res in responses:
+            parts = res.split()
+            if len(parts) == 4:
+                lobby_id, host, max_players, current_players = parts
+                self.add_lobby_row(lobby_id, host, current_players, max_players)
+
+    def auto_refresh_lobbies(self):
+        while refreshing:
+            self.fetch_lobbies()
+            self.after(5000, lambda: None)  # Ensure UI thread is used
+            threading.Event().wait(5)
+
+    def add_lobby_row(self, lobby_id, host, current, max_):
+        row = tk.Frame(self.lobby_list, bg='white')
+        row.pack(fill=tk.X, pady=2)
+
+        tk.Label(row, text=lobby_id, width=40, anchor='w').pack(side=tk.LEFT)
+        tk.Label(row, text=host, width=20).pack(side=tk.LEFT)
+        tk.Label(row, text=f"{current}/{max_}", width=10).pack(side=tk.LEFT)
+        tk.Button(row, text="Join", command=lambda: self.join_lobby(lobby_id, host)).pack(side=tk.LEFT)
+
+    def join_lobby(self, lobby_id, host_name):
+        global current_lobby_id, is_host
+        send_msg(f"101 {lobby_id}")
+        current_lobby_id = lobby_id
+        is_host = (host_name == username)
+        self.init_lobby_frame()
+
     def create_lobby(self):
-        try:
-            self.sock.sendall(b"100")  # Manda "100" come bytes
-        except Exception as e:
-            messagebox.showerror("Send Error", str(e))
+        global current_lobby_id, is_host
+        send_msg("100")
+        # Use a placeholder ID temporarily; in practice, you'd get this from server
+        current_lobby_id = "new-host-lobby-id"
+        is_host = True
+        self.init_lobby_frame()
 
-    # Funzione associata a "Mostra Lobby"
-    def show_lobbies(self):
-        try:
-            self.sock.sendall(b"102")  # OP_GET_LOBBIES
-            data = self.sock.recv(4096)
-            lobbies = self.parse_lobbies(data.decode())
-            self.display_lobbies_popup(lobbies)
-        except Exception as e:
-            messagebox.showerror("Errore", f"Errore nel recupero delle lobby: {e}")
+    def init_lobby_frame(self):
+        self.clear()
+        tk.Label(self, text=f"Lobby {current_lobby_id[:12]}...", bg="black", fg="white").pack(anchor='nw', padx=10, pady=10)
 
-    def parse_lobbies(self, data: str):
-        # Ogni lobby è su una riga, ogni campo separato da spazio
-        lobbies = []
-        print(f'data: {data}')
-        lines = data.strip().split('\n')
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) >= 4:
-                lobby_id = parts[0]
-                host = parts[1]
-                max_players = parts[2]
-                player_count = parts[3]
-                lobbies.append({
-                    "id": lobby_id,
-                    "host": host,
-                    "max_players": max_players,
-                    "player_count": player_count
-                })
-        return lobbies
+        chat_frame = tk.Frame(self, bg='white', bd=1, relief='sunken')
+        chat_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
 
-    def display_lobbies_popup(self, lobbies):
-        popup = Toplevel(self.master)
-        popup.title("Lobby Attive")
-        listbox = Listbox(popup, width=60)
-        listbox.pack(padx=10, pady=10)
-        print(f'lobbies: {lobbies}')
-        if not lobbies:
-            listbox.insert(END, "Nessuna lobby attiva.")
-        else:
-            for lobby in lobbies:
-                # Mostra i dati secondo la nuova formattazione
-                listbox.insert(
-                    END,
-                    f"ID: {lobby['id']} | Host: {lobby['host']} | Giocatori: {lobby['player_count']}/{lobby['max_players']}"
-                )
+        self.chat_display = tk.Text(chat_frame, state='disabled', height=10)
+        self.chat_display.pack(fill=tk.BOTH, expand=True)
 
-    def receive_messages(self):
-        while self.running:
-            try:
-                data = self.sock.recv(1024)
-                if not data:
-                    break
-                message = data.decode()
-                print(f'message: {message}')
-                # Controlla se il messaggio è quello di disconnessione dell'host
-                if "L'host ha abbandonato la lobby, sei stato disconesso" in message:
-                    self.chat_area.configure(state='normal')
-                    self.chat_area.insert(tk.END, f"{message}\n")
-                    self.chat_area.configure(state='disabled')
-                    self.chat_area.yview(tk.END)
-                    # Mostra solo popup, NON chiudere il client
-                    self.master.after(0, lambda: messagebox.showinfo("Disconnesso", message))
-                else:
-                    self.chat_area.configure(state='normal')
-                    self.chat_area.insert(tk.END, f"{message}\n")
-                    self.chat_area.configure(state='disabled')
-                    self.chat_area.yview(tk.END)
-            except:
-                break
+        bottom_frame = tk.Frame(self)
+        bottom_frame.pack(fill=tk.X, padx=20, pady=5)
 
-        self.sock.close()
+        self.msg_entry = tk.Entry(bottom_frame)
+        self.msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-    def on_closing(self):
-        self.running = False
-        self.sock.close()
-        self.master.destroy()
+        tk.Button(bottom_frame, text="Send").pack(side=tk.RIGHT, padx=5)
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    client = ClientGUI(root)
-    root.protocol("WM_DELETE_WINDOW", client.on_closing)
-    root.mainloop()
-    root.protocol("WM_DELETE_WINDOW", client.on_closing)
-    root.mainloop()
+        btn_frame = tk.Frame(self)
+        btn_frame.pack(anchor='ne', padx=20, pady=5)
+
+        if is_host:
+            tk.Button(btn_frame, text="Start the match!").pack(side=tk.RIGHT, padx=5)
+
+        tk.Button(btn_frame, text="Leave", command=self.leave_lobby).pack(side=tk.RIGHT, padx=5)
+
+    def leave_lobby(self):
+        global current_lobby_id
+        send_msg("103")
+        current_lobby_id = ''
+        self.init_home_frame()
+
+
+if __name__ == '__main__':
+    app = GameGUI()
+    app.mainloop()
