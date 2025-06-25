@@ -15,6 +15,7 @@
 #define OP_CREATE_LOBBY 100
 #define OP_JOIN_LOBBY 101
 #define OP_GET_LOBBIES 102
+#define OP_LEAVE_LOBBY 103
 
 typedef struct Lobby Lobby;
 
@@ -23,8 +24,8 @@ typedef struct
     char id[37];
     char username[32];
     int socket;
-    bool isInLobby;
-    Lobby* lobby_hosted;
+    Lobby* lobby;
+    bool isHost;
     pthread_mutex_t socket_mutex;
 } Player;
 
@@ -74,14 +75,21 @@ void fill_buffer(gpointer key, gpointer value, gpointer bufferContext) {
     bufCont->idx += written;
 }
 
-void lobby_broadcast_disconnection(gpointer player, gpointer context) {
+void lobby_broadcast_disconnection(gpointer player, gpointer ssender) {
     Player* p = (Player*) player;
-    char message[] = "L'host ha abbandonato la lobby, sei stato disconesso";
+    Player* sender = (Player*) ssender;
+    if (strcmp(p->id, sender->id) == 0) {
+        return; //do not send to sender
+    }
+
+    char* message = (sender->isHost) ? 
+        "L'host ha abbandonato la lobby, sei stato disconesso" :
+        "Un player ha abbandonato la lobby";
     pthread_mutex_lock(&(p->socket_mutex));
     printf("sto inviando il messaggio a %s\n", p->username);
-    send(p->socket, message, sizeof(message), 0);
+    send(p->socket, message, strlen(message), 0);
     pthread_mutex_unlock(&(p->socket_mutex));
-    p->isInLobby = false;
+    p->lobby = NULL;
 }
 
 GHashTable* players;
@@ -108,8 +116,8 @@ void *handle_client(void *arg)
     uuid_unparse(id, p->id);
     strcpy(p->username, buffer);
     p->socket = client_socket;
-    p->isInLobby = false;
-    p->lobby_hosted = NULL;
+    p->lobby = NULL;
+    p->isHost = false;
     pthread_mutex_init(&(p->socket_mutex), NULL);
     pthread_mutex_lock(&global_players_mutex);
     g_hash_table_insert(players, g_strdup(p->id), p);
@@ -133,7 +141,7 @@ void *handle_client(void *arg)
         switch (op_number)
         {
             case OP_CREATE_LOBBY: {
-                if(p->isInLobby){
+                if(p->lobby){
                     char error_messagge[] = "Non puoi creare la lobby perche gia sei in una lobby";
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
@@ -154,8 +162,8 @@ void *handle_client(void *arg)
                 pthread_mutex_init(&(lobby->players_mutex), NULL);
                 lobby->host = p;
                 lobby->max_players = MAX_PLAYERS; //TODO setta il max_players passato dal client
-                p->isInLobby = true;
-                p->lobby_hosted = lobby;
+                p->lobby = lobby;
+                p->isHost = true;
                 lobby->players = NULL;
                 lobby->players = g_slist_append(lobby->players, lobby->host);
                 pthread_mutex_lock(&lobbies_mutex);
@@ -173,7 +181,7 @@ void *handle_client(void *arg)
                 char lobby_id[37];
                 strncpy(lobby_id,buffer+4,36);
                 lobby_id[36]='\0';
-                if(p->isInLobby){
+                if(p->lobby){
                     char error_messagge[] = "Non puoi unirti alla lobby perche gia sei in una lobby";
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
@@ -199,7 +207,7 @@ void *handle_client(void *arg)
 
                 pthread_mutex_lock(&(lobby->players_mutex));
                 lobby->players = g_slist_append(lobby->players, p);
-                p->isInLobby = true;
+                p->lobby = lobby;
                 pthread_mutex_unlock(&(lobby->players_mutex));
                 
                 char response_message[] = "Benvenuto in lobby";
@@ -228,6 +236,29 @@ void *handle_client(void *arg)
                 free(buffer);
                 break;
             }
+            case OP_LEAVE_LOBBY: {
+                if (!p->lobby) {
+                    char error_messagge[] = "Non fai parte di una lobby";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+                if (p->isHost) {
+                    g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                    pthread_mutex_lock(&lobbies_mutex);
+                    g_hash_table_remove(lobbies, p->lobby->id);
+                    pthread_mutex_unlock(&lobbies_mutex);
+                    p->lobby = NULL;
+                } else {
+                    g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                    pthread_mutex_lock(&(p->lobby->players_mutex));
+                    p->lobby->players = g_slist_remove(p->lobby->players, p);
+                    pthread_mutex_unlock(&(p->lobby->players_mutex));
+                    p->lobby = NULL;
+                }
+                break;
+            }
             default:{
                 char default_message[] = "Non ho capito il tuo messaggio";
                 pthread_mutex_lock(&(p->socket_mutex));
@@ -240,16 +271,14 @@ void *handle_client(void *arg)
     close(client_socket);
     printf("Player %s (%s) disconnesso.\n", p->username, p->id);
 
-    printf("p->lobby_hosted: %p\n", p->lobby_hosted);
-    if (p->lobby_hosted) {
-        Lobby* lobby = p->lobby_hosted;
-        printf("lobby->player_count: %d\n", g_slist_length(lobby->players));
-        g_slist_foreach(lobby->players, lobby_broadcast_disconnection, NULL);
-        
-        pthread_mutex_lock(&lobbies_mutex);
-        g_hash_table_remove(lobbies, lobby->id);
-        pthread_mutex_unlock(&lobbies_mutex);
-        lobby = NULL;  
+    if (p->lobby) {
+        g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+        if (p->isHost) {
+            pthread_mutex_lock(&lobbies_mutex);
+            g_hash_table_remove(lobbies, p->lobby->id);
+            pthread_mutex_unlock(&lobbies_mutex);
+        }
+        p->lobby = NULL;
     }
 
     pthread_mutex_lock(&global_players_mutex);
