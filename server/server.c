@@ -10,16 +10,21 @@
 #include <glib-2.0/glib.h>
 
 #define PORT 8080
+#define MIN_PLAYERS 2
 #define MAX_PLAYERS 10
 #define MAX_LOBBIES 5
+#define MAX_LENGTH 30
 
 #define OP_CREATE_LOBBY 100
 #define OP_JOIN_LOBBY 101
 #define OP_GET_LOBBIES 102
 #define OP_LEAVE_LOBBY 103
+#define OP_START_MATCH 110
+#define OP_SPEAK 111
 #define OP_ANON_LOGIN 200
 
 typedef struct Lobby Lobby;
+typedef struct Match Match;
 
 typedef struct
 {
@@ -38,6 +43,7 @@ struct Lobby
     int max_players;
     GSList* players;
     GQueue* queue;
+    Match* match;
     pthread_mutex_t players_mutex;
 };
 
@@ -48,11 +54,23 @@ typedef struct {
     int player_count;
 } LobbyDto;
 
+struct Match {
+    int turn;
+    bool clockwise;
+    bool terminated;
+    GSList* word;
+};
 
 typedef struct {
     char* buffer;
     int idx; //chars written
 } BufferContext;
+
+typedef struct {
+    Player* player_turn;
+    bool terminated;
+    GSList* word;
+} TurnContext;
 
 void delete_player(gpointer data) {
     Player* p = (Player*) data;
@@ -63,7 +81,9 @@ void delete_lobby(gpointer data) {
     Lobby* lobby = (Lobby*) data;
     pthread_mutex_lock(&(lobby->players_mutex));
     g_slist_free(lobby->players);
+    g_queue_free(lobby->queue);
     pthread_mutex_unlock(&(lobby->players_mutex));
+    free(lobby->match);
     g_free(lobby);
 }
 
@@ -95,6 +115,55 @@ void lobby_broadcast_disconnection(gpointer player, gpointer ssender) {
     if(sender->isHost){
         p->lobby = NULL;
     }
+}
+
+void word_history(gpointer word_step, gpointer bufferContext) {
+    char* step = (char*) word_step;
+    BufferContext* context = (BufferContext*) bufferContext;
+    
+    int written = snprintf(context->buffer + context->idx, strlen(step)+5, "%s -> ", step);
+    context->idx += written;
+}
+
+void match_turn_broadcast(gpointer player, gpointer turnContext) {
+    Player* p = (Player*) player;
+    TurnContext* context = (TurnContext*) turnContext;
+
+    char message[MAX_LENGTH*MAX_PLAYERS+200] = {0};
+    char body[MAX_LENGTH*MAX_PLAYERS+100] = {0};
+    if (context->terminated) {
+        const char* header = "300\nThe match is terminated\nHere is the story of the phrase:\n";
+        strcpy(body, header);
+        int header_len = strlen(header);
+
+        char phrase[MAX_LENGTH*MAX_PLAYERS+50] = {0};
+        int phrase_idx = 0;
+        for (GSList* node = context->word; node != NULL; node = node->next) {
+            char* step = (char*) node->data;
+            int written = snprintf(phrase + phrase_idx, sizeof(phrase) - phrase_idx, "%s -> ", step);
+            phrase_idx += written;
+        }
+        if (phrase_idx >= 4) {
+            phrase[phrase_idx-4] = '\0';
+        }
+        snprintf(body + header_len, sizeof(body) - header_len, "%s\n", phrase);
+    } else {
+        if (p->id == context->player_turn->id) {
+            GSList* node = g_slist_last(context->word);
+            if (node) {
+                snprintf(body, sizeof(body), "300\nIs your turn!\nThe current phrase is: %s\n", (char*) node->data);
+            } else {
+                snprintf(body, sizeof(body), "300\nIs your turn!\nStart with a phrase\n");
+            }
+        } else {
+            snprintf(body, sizeof(body), "300\nWait for the other players to finish");
+        }
+    }
+    strncat(message, body, sizeof(message) - strlen(message) - 1);
+    pthread_mutex_lock(&(p->socket_mutex));
+    printf("\nSto mandando questo messaggio: %s\n", message);
+    send(p->socket, message, strlen(message), 0);
+    pthread_mutex_unlock(&(p->socket_mutex));
 }
 
 GHashTable* players;
@@ -209,17 +278,16 @@ void *handle_client(void *arg)
                 p->lobby = lobby;
                 p->isHost = true;
                 lobby->players = NULL;
+                lobby->match = malloc(sizeof(Match));
                 lobby->players = g_slist_append(lobby->players, lobby->host);
                 pthread_mutex_lock(&lobbies_mutex);
                 g_hash_table_insert(lobbies, g_strdup(lobby->id), lobby);
                 pthread_mutex_unlock(&lobbies_mutex);
-                int response_len = strlen("200\nLobby created!\n\0")+37;
-                char success_lobby[response_len]; 
-                snprintf(success_lobby, strlen(success_lobby), "200\nLobby created!\n%s", lobby->id);
+                char success_message[] = "Lobby created!";
                 print_lobby(lobby);
                 printf("Lobby created, number of lobbies: %d\n", g_hash_table_size(lobbies));
                 pthread_mutex_lock(&(p->socket_mutex));
-                send(client_socket,success_lobby,strlen(success_lobby),0);
+                send(client_socket, success_message, sizeof(success_message), 0);
                 pthread_mutex_unlock(&(p->socket_mutex));
                 break;
             }
@@ -300,6 +368,7 @@ void *handle_client(void *arg)
                 if (!p) {
                     char * msg = "400\nYou must authenticate first!";
                     send(client_socket, msg, strlen(msg), 0);
+                    break;
                 }
                 if (!p->lobby) {
                     char error_messagge[] = "400\nYou are not in a lobby";
@@ -350,6 +419,108 @@ void *handle_client(void *arg)
                 pthread_mutex_unlock(&(p->socket_mutex));
                 break;
             }
+            case OP_START_MATCH: {
+                if (!p) {
+                    char * msg = "400\nYou must authenticate first!";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                if (!p->isHost) {
+                    char error_messagge[] = "400\nYou are not the host";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+                if (g_slist_length(p->lobby->players) < MIN_PLAYERS) {
+                    char error_messagge[] = "400\nMinimum 4 players required";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+                Match* match = p->lobby->match;
+                match->turn = 0;
+                match->terminated = false;
+                match->word = NULL;
+                match->clockwise = true;
+                // TODO fetcha la direzione dal client
+
+                TurnContext context = {p, false, NULL};
+                g_slist_foreach(p->lobby->players, match_turn_broadcast, &context);
+                break;
+            }
+            case OP_SPEAK: {
+                if (!p) {
+                    char * msg = "400\nYou must authenticate first!";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                if (!p->lobby) {
+                    char error_messagge[] = "400\nYou are not in a lobby";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+                if (p->lobby->match->terminated) {
+                    char error_messagge[] = "400\nThe match is terminated";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+                GSList* player_node = g_slist_nth(p->lobby->players, p->lobby->match->turn);
+                if (p->id != ((Player*) player_node->data)->id) {
+                    char error_messagge[] = "400\nIs not your turn";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+
+                char word_len[3];
+                strncpy(word_len, buffer+4, 2);
+                word_len[2] = '\0';
+                int len = atoi(word_len);
+
+                if (len >= MAX_LENGTH) {
+                    char error_messagge[] = "400\nThe maximum length is 30";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+                char* word = malloc(len*sizeof(char)+1);
+                strncpy(word, buffer+7, len);
+                word[len] = '\0';
+                
+                char str[MAX_LENGTH*MAX_PLAYERS+MAX_PLAYERS] = {0};
+                if (p->lobby->match->turn == 0) {
+                    strncpy(str, word, sizeof(word)+5);
+                } else {
+                    char* word_prev = (char*) g_slist_last(p->lobby->match->word)->data;
+                    snprintf(str, sizeof(str), "%s %s", word_prev, word);
+                }
+                printf("str: %s\n", str);
+                p->lobby->match->word = g_slist_append(p->lobby->match->word, str);
+                p->lobby->match->turn++;
+
+                GSList* nextNode = player_node->next;
+                Player* nextPlayer = NULL;
+                if (nextNode) {
+                    nextPlayer = (Player*) nextNode->data;
+                } else {
+                    nextPlayer = (Player*) p->lobby->players->data;
+                }
+                if(p->lobby->match->turn >= g_slist_length(p->lobby->players)) {
+                    p->lobby->match->terminated = true;
+                }
+                TurnContext context = {nextPlayer, p->lobby->match->terminated, p->lobby->match->word};
+                g_slist_foreach(p->lobby->players, match_turn_broadcast, &context);
+
+                break;
+            }
             default: {
                 if (!p) {
                     char * msg = "400\nYou must authenticate first!";
@@ -368,13 +539,38 @@ void *handle_client(void *arg)
     printf("Player %s (%s) disconnesso.\n", p->username, p->id);
 
     if (p->lobby) {
-        g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
         if (p->isHost) {
+            g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+            g_queue_foreach(p->lobby->queue, lobby_broadcast_disconnection, p);
             pthread_mutex_lock(&lobbies_mutex);
             g_hash_table_remove(lobbies, p->lobby->id);
             pthread_mutex_unlock(&lobbies_mutex);
+            p->lobby = NULL;
+            p->isHost = false;
+        } else {
+            if (g_queue_find(p->lobby->queue, p)){
+                pthread_mutex_lock(&(p->lobby->players_mutex));
+                g_queue_pop_head(p->lobby->queue);
+                pthread_mutex_unlock(&(p->lobby->players_mutex));
+                p->lobby = NULL;
+            }
+            else
+            {
+                g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                pthread_mutex_lock(&(p->lobby->players_mutex));
+                p->lobby->players = g_slist_remove(p->lobby->players, p);
+                if (!g_queue_is_empty(p->lobby->queue)){
+                    Player *queue_player = g_queue_pop_head(p->lobby->queue);
+                    p->lobby->players = g_slist_append(p->lobby->players, queue_player);
+                    char success_message[] = "200\nWelcome to the lobby";
+                    pthread_mutex_lock(&(queue_player->socket_mutex));
+                    send(queue_player->socket, success_message, sizeof(success_message), 0);
+                    pthread_mutex_unlock(&(queue_player->socket_mutex));
+                }
+                pthread_mutex_unlock(&(p->lobby->players_mutex));
+                p->lobby = NULL;
+            }
         }
-        p->lobby = NULL;
     }
 
     pthread_mutex_lock(&global_players_mutex);
