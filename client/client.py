@@ -1,174 +1,250 @@
 import socket
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import simpledialog, messagebox, scrolledtext, ttk
 
-HOST = 'localhost'
-PORT = 8080
+SERVER_IP = '127.0.0.1'
+SERVER_PORT = 8080
 
-client_socket = None
-username = ''
-current_lobby_id = ''
-is_host = False
-refreshing = False  # To stop refresh thread when not on home
+class ClientGUI:
+    def __init__(self, master):
+        self.master = master
+        master.title("Telefono Senza Fili - Client")
+        master.geometry("600x500")
+        master.configure(bg="#f0f4f8")
+        self.sock = None
+        self.username = None
 
-def connect_to_server():
-    global client_socket
-    try:
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.connect((HOST, PORT))
-    except Exception as e:
-        messagebox.showerror("Connection Error", str(e))
+        # Font settings
+        self.font_main = ("Segoe UI", 11)
+        self.font_title = ("Segoe UI", 16, "bold")
+        self.font_btn = ("Segoe UI", 11, "bold")
 
-def send_msg(msg):
-    try:
-        client_socket.sendall(msg.encode('utf-8'))
-    except Exception as e:
-        messagebox.showerror("Send Error", str(e))
+        # Title
+        self.title_label = tk.Label(master, text="Telefono Senza Fili", font=self.font_title, bg="#f0f4f8", fg="#2d415a")
+        self.title_label.pack(pady=(15, 5))
 
-def receive_lines():
-    try:
-        data = client_socket.recv(4096).decode('utf-8')
-        return data.strip().split('\n')
-    except Exception as e:
-        messagebox.showerror("Receive Error", str(e))
-        return []
+        # Separator
+        ttk.Separator(master, orient='horizontal').pack(fill='x', padx=10, pady=5)
 
-class GameGUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Socket Game")
-        self.geometry("800x400")
-        self.configure(bg='black')
-        self.username = ''
-        self.init_login_frame()
+        # UI Elements
+        self.text_area = scrolledtext.ScrolledText(master, height=12, width=65, state='disabled', font=self.font_main, bg="#f8fafc", fg="#222")
+        self.text_area.pack(padx=15, pady=(5, 15))
 
-    def clear(self):
-        global refreshing
-        refreshing = False  # Stop background refresh
-        for widget in self.winfo_children():
-            widget.destroy()
+        # Username frame
+        self.user_frame = tk.Frame(master, bg="#f0f4f8")
+        self.user_frame.pack(pady=(0, 10))
 
-    def init_login_frame(self):
-        self.clear()
-        frame = tk.Frame(self, bg="white", padx=20, pady=20)
-        frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.entry = tk.Entry(self.user_frame, width=25, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2)
+        self.entry.grid(row=0, column=0, padx=(0, 10))
+        self.entry.insert(0, "Inserisci username...")
+        self.entry.bind("<FocusIn>", self.clear_username_placeholder)
+        self.entry.bind("<FocusOut>", self.restore_username_placeholder)
 
-        tk.Label(frame, text="Username").pack()
-        self.username_entry = tk.Entry(frame)
-        self.username_entry.pack(pady=5)
-        tk.Button(frame, text="Play!", command=self.login_action).pack(pady=5)
+        self.login_btn = tk.Button(self.user_frame, text="Login", command=self.login, font=self.font_btn, bg="#4f8cff", fg="white", activebackground="#357ae8", width=10, relief=tk.RAISED, bd=2)
+        self.login_btn.grid(row=0, column=1)
 
-    def login_action(self):
-        global username
-        username = self.username_entry.get()
-        if not username:
+        # Lobby actions frame
+        self.lobby_frame = tk.Frame(master, bg="#f0f4f8")
+        self.lobby_frame.pack(pady=(0, 10))
+
+        self.lobbies_btn = tk.Button(self.lobby_frame, text="Mostra Lobby", command=self.get_lobbies, state='disabled', font=self.font_btn, bg="#4f8cff", fg="white", activebackground="#357ae8", width=14, relief=tk.RAISED, bd=2)
+        self.lobbies_btn.grid(row=0, column=0, padx=5)
+
+        self.create_btn = tk.Button(self.lobby_frame, text="Crea Lobby", command=self.create_lobby, state='disabled', font=self.font_btn, bg="#4f8cff", fg="white", activebackground="#357ae8", width=14, relief=tk.RAISED, bd=2)
+        self.create_btn.grid(row=0, column=1, padx=5)
+
+        self.leave_btn = tk.Button(self.lobby_frame, text="Esci da Lobby", command=self.leave_lobby, state='disabled', font=self.font_btn, bg="#ff6b6b", fg="white", activebackground="#e84141", width=14, relief=tk.RAISED, bd=2)
+        self.leave_btn.grid(row=0, column=2, padx=5)
+
+        # Join lobby frame
+        self.join_frame = tk.Frame(master, bg="#f0f4f8")
+        self.join_frame.pack(pady=(0, 10))
+
+        self.lobby_id_entry = tk.Entry(self.join_frame, width=32, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2)
+        self.lobby_id_entry.grid(row=0, column=0, padx=(0, 10))
+        self.lobby_id_entry.insert(0, "ID Lobby per entrare...")
+        self.lobby_id_entry.bind("<FocusIn>", self.clear_lobbyid_placeholder)
+        self.lobby_id_entry.bind("<FocusOut>", self.restore_lobbyid_placeholder)
+
+        self.join_btn = tk.Button(self.join_frame, text="Entra in Lobby", command=self.join_lobby, state='disabled', font=self.font_btn, bg="#43d17a", fg="white", activebackground="#2fa75a", width=14, relief=tk.RAISED, bd=2)
+        self.join_btn.grid(row=0, column=1)
+
+        self.master.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Stato per feedback
+        self.last_action = None
+
+        # --- Campo invio manuale ---
+        self.send_frame = tk.Frame(master, bg="#f0f4f8")
+        self.send_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+
+        self.send_entry = tk.Entry(self.send_frame, width=45, font=self.font_main, relief=tk.GROOVE, bd=2)
+        self.send_entry.pack(side=tk.LEFT, padx=(0, 10), ipady=2)
+        self.send_entry.insert(0, "Scrivi richiesta TCP...")
+
+        self.send_entry.bind("<FocusIn>", self.clear_send_placeholder)
+        self.send_entry.bind("<FocusOut>", self.restore_send_placeholder)
+        self.send_entry.bind("<Return>", lambda event: self.send_custom())
+
+        self.send_btn = tk.Button(self.send_frame, text="Invia", command=self.send_custom, font=self.font_btn, bg="#222", fg="white", activebackground="#444", width=10, relief=tk.RAISED, bd=2)
+        self.send_btn.pack(side=tk.LEFT)
+
+    # Placeholder handlers
+    def clear_username_placeholder(self, event):
+        if self.entry.get() == "Inserisci username...":
+            self.entry.delete(0, tk.END)
+            self.entry.config(fg='black')
+
+    def restore_username_placeholder(self, event):
+        if not self.entry.get():
+            self.entry.insert(0, "Inserisci username...")
+            self.entry.config(fg='grey')
+
+    def clear_lobbyid_placeholder(self, event):
+        if self.lobby_id_entry.get() == "ID Lobby per entrare...":
+            self.lobby_id_entry.delete(0, tk.END)
+            self.lobby_id_entry.config(fg='black')
+
+    def restore_lobbyid_placeholder(self, event):
+        if not self.lobby_id_entry.get():
+            self.lobby_id_entry.insert(0, "ID Lobby per entrare...")
+            self.lobby_id_entry.config(fg='grey')
+
+    def clear_send_placeholder(self, event):
+        if self.send_entry.get() == "Scrivi richiesta TCP...":
+            self.send_entry.delete(0, tk.END)
+            self.send_entry.config(fg='black')
+
+    def restore_send_placeholder(self, event):
+        if not self.send_entry.get():
+            self.send_entry.insert(0, "Scrivi richiesta TCP...")
+            self.send_entry.config(fg='grey')
+
+    def connect(self):
+        if self.sock:
             return
-        connect_to_server()
-        send_msg(username)  # Send username as first message
-        self.init_home_frame()
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect((SERVER_IP, SERVER_PORT))
+        threading.Thread(target=self.listen_server, daemon=True).start()
 
+    def listen_server(self):
+        while True:
+            try:
+                data = self.sock.recv(1024)
+                if not data:
+                    break
+                msg = data.decode()
+                self.append_text(msg)
+                self.handle_feedback(msg)
+            except Exception as e:
+                break
 
-    def init_home_frame(self):
-        global refreshing
-        self.clear()
-        refreshing = True
+    def append_text(self, msg):
+        self.text_area.config(state='normal')
+        # Aggiungi una riga vuota tra i messaggi
+        self.text_area.insert(tk.END, msg + "\n\n")
+        self.text_area.see(tk.END)
+        self.text_area.config(state='disabled')
 
-        tk.Label(self, text=f"Hello {username}!", fg='white', bg='black').pack(anchor='nw', padx=10, pady=10)
+    def handle_feedback(self, msg):
+        # Analizza il codice di risposta e mostra feedback
+        lines = msg.strip().split('\n')
+        if not lines or not lines[0]:
+            return
+        code = lines[0]
+        # Feedback in base all'ultima azione
+        if code == "200":
+            if self.last_action == "login":
+                messagebox.showinfo("Login", "Login effettuato con successo!")
+            elif self.last_action == "create_lobby":
+                messagebox.showinfo("Lobby", "Lobby creata con successo!")
+            elif self.last_action == "join_lobby":
+                messagebox.showinfo("Lobby", "Entrato nella lobby!")
+            elif self.last_action == "leave_lobby":
+                messagebox.showinfo("Lobby", "Uscito dalla lobby!")
+            elif self.last_action == "get_lobbies":
+                # Mostra feedback anche se la lista è vuota
+                if len(lines) > 1 and lines[1]:
+                    messagebox.showinfo("Lobby", "Lista lobby aggiornata.")
+                else:
+                    messagebox.showinfo("Lobby", "Nessuna lobby disponibile.")
+        elif code == "400":
+            messagebox.showerror("Errore", "\n".join(lines[1:]))
+        elif code == "404":
+            messagebox.showerror("Errore", "Lobby non trovata.")
+        elif code == "500":
+            messagebox.showerror("Errore", "\n".join(lines[1:]))
+        elif code == "300":
+            messagebox.showwarning("Lobby", "L'host ha lasciato la lobby.")
+        elif code == "301":
+            messagebox.showwarning("Lobby", "Un giocatore ha lasciato la lobby.")
+        # Reset azione
+        self.last_action = None
 
-        self.lobby_frame = tk.Frame(self, bg="white")
-        self.lobby_frame.pack(pady=10, padx=20)
+    def login(self):
+        username = self.entry.get().strip()
+        if username == "Inserisci username...":
+            messagebox.showerror("Errore", "Inserisci un username valido.")
+            return
+        if not (5 <= len(username) <= 15):
+            messagebox.showerror("Errore", "Username deve essere tra 5 e 15 caratteri.")
+            return
+        self.connect()
+        self.sock.sendall(f"200 {username}".encode())
+        self.username = username
+        self.lobbies_btn.config(state='normal')
+        self.create_btn.config(state='normal')
+        self.join_btn.config(state='normal')
+        self.leave_btn.config(state='normal')
+        self.login_btn.config(state='disabled')
+        self.entry.config(state='disabled')
+        self.last_action = "login"
 
-        header = tk.Frame(self.lobby_frame, bg='white')
-        header.pack(fill=tk.X)
-        tk.Label(header, text="ID", width=40, anchor='w').pack(side=tk.LEFT)
-        tk.Label(header, text="Host", width=20).pack(side=tk.LEFT)
-        tk.Label(header, text="Players", width=10).pack(side=tk.LEFT)
-
-        self.lobby_list = tk.Frame(self.lobby_frame, bg='white')
-        self.lobby_list.pack()
-
-        tk.Button(self, text="Create a lobby", command=self.create_lobby).pack(pady=10)
-
-        self.fetch_lobbies()
-
-        # Start auto-refresh
-        threading.Thread(target=self.auto_refresh_lobbies, daemon=True).start()
-
-    def fetch_lobbies(self):
-        for widget in self.lobby_list.winfo_children():
-            widget.destroy()
-        send_msg("102")
-        responses = receive_lines()
-        for res in responses:
-            parts = res.split()
-            if len(parts) == 4:
-                lobby_id, host, max_players, current_players = parts
-                self.add_lobby_row(lobby_id, host, current_players, max_players)
-
-    def auto_refresh_lobbies(self):
-        while refreshing:
-            self.fetch_lobbies()
-            self.after(5000, lambda: None)  # Ensure UI thread is used
-            threading.Event().wait(5)
-
-    def add_lobby_row(self, lobby_id, host, current, max_):
-        row = tk.Frame(self.lobby_list, bg='white')
-        row.pack(fill=tk.X, pady=2)
-
-        tk.Label(row, text=lobby_id, width=40, anchor='w').pack(side=tk.LEFT)
-        tk.Label(row, text=host, width=20).pack(side=tk.LEFT)
-        tk.Label(row, text=f"{current}/{max_}", width=10).pack(side=tk.LEFT)
-        tk.Button(row, text="Join", command=lambda: self.join_lobby(lobby_id, host)).pack(side=tk.LEFT)
-
-    def join_lobby(self, lobby_id, host_name):
-        global current_lobby_id, is_host
-        send_msg(f"101 {lobby_id}")
-        current_lobby_id = lobby_id
-        is_host = (host_name == username)
-        self.init_lobby_frame()
+    def get_lobbies(self):
+        self.sock.sendall(b"102")
+        self.last_action = "get_lobbies"
 
     def create_lobby(self):
-        global current_lobby_id, is_host
-        send_msg("100")
-        # Use a placeholder ID temporarily; in practice, you'd get this from server
-        current_lobby_id = "new-host-lobby-id"
-        is_host = True
-        self.init_lobby_frame()
+        self.sock.sendall(b"100")
+        self.last_action = "create_lobby"
 
-    def init_lobby_frame(self):
-        self.clear()
-        tk.Label(self, text=f"Lobby {current_lobby_id[:12]}...", bg="black", fg="white").pack(anchor='nw', padx=10, pady=10)
-
-        chat_frame = tk.Frame(self, bg='white', bd=1, relief='sunken')
-        chat_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-
-        self.chat_display = tk.Text(chat_frame, state='disabled', height=10)
-        self.chat_display.pack(fill=tk.BOTH, expand=True)
-
-        bottom_frame = tk.Frame(self)
-        bottom_frame.pack(fill=tk.X, padx=20, pady=5)
-
-        self.msg_entry = tk.Entry(bottom_frame)
-        self.msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        tk.Button(bottom_frame, text="Send").pack(side=tk.RIGHT, padx=5)
-
-        btn_frame = tk.Frame(self)
-        btn_frame.pack(anchor='ne', padx=20, pady=5)
-
-        if is_host:
-            tk.Button(btn_frame, text="Start the match!").pack(side=tk.RIGHT, padx=5)
-
-        tk.Button(btn_frame, text="Leave", command=self.leave_lobby).pack(side=tk.RIGHT, padx=5)
+    def join_lobby(self):
+        lobby_id = self.lobby_id_entry.get().strip()
+        if lobby_id == "ID Lobby per entrare...":
+            messagebox.showerror("Errore", "Inserisci un ID lobby valido.")
+            return
+        if len(lobby_id) != 36:
+            messagebox.showerror("Errore", "Inserisci un ID lobby valido (36 caratteri).")
+            return
+        self.sock.sendall(f"101 {lobby_id}".encode())
+        self.last_action = "join_lobby"
 
     def leave_lobby(self):
-        global current_lobby_id
-        send_msg("103")
-        current_lobby_id = ''
-        self.init_home_frame()
+        self.sock.sendall(b"103")
+        self.last_action = "leave_lobby"
 
+    def send_custom(self):
+        msg = self.send_entry.get().strip()
+        if not msg or msg == "Scrivi richiesta TCP...":
+            return
+        try:
+            if self.sock:
+                self.sock.sendall(msg.encode())
+                self.append_text(f"[Inviato manualmente]: {msg}")
+        except Exception as e:
+            messagebox.showerror("Errore", f"Errore invio: {e}")
+        self.send_entry.delete(0, tk.END)
 
-if __name__ == '__main__':
-    app = GameGUI()
-    app.mainloop()
+    def on_close(self):
+        try:
+            if self.sock:
+                self.sock.close()
+        except:
+            pass
+        self.master.destroy()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    gui = ClientGUI(root)
+    root.mainloop()
