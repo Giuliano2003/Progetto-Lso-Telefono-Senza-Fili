@@ -492,6 +492,7 @@ void *handle_client(void *arg)
                 strncpy(word_len, buffer+4, 2);
                 word_len[2] = '\0';
                 int len = atoi(word_len);
+                printf("Inserted word length is %d\n", len);
 
                 if (len >= MAX_LENGTH) {
                     char error_messagge[] = "400\nThe maximum length is 30";
@@ -504,9 +505,10 @@ void *handle_client(void *arg)
                 strncpy(word, buffer+7, len);
                 word[len] = '\0';
                 
-                char str[MAX_LENGTH*MAX_PLAYERS+MAX_PLAYERS] = {0};
+                char str[MAX_PLAYERS*(MAX_LENGTH + 1)] = {0};
+                printf("The parsed word is: %s", word);
                 if (p->lobby->match->turn == 0) {
-                    strncpy(str, word, sizeof(word)+5);
+                    strncpy(str, word, len+1);
                 } else {
                     char* word_prev = (char*) g_slist_last(p->lobby->match->word)->data;
                     snprintf(str, sizeof(str), "%s %s", word_prev, word);
