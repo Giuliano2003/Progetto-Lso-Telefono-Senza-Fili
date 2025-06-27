@@ -114,6 +114,14 @@ void lobby_broadcast_disconnection(gpointer player, gpointer ssender) {
     pthread_mutex_unlock(&(p->socket_mutex));
     if(sender->isHost){
         p->lobby = NULL;
+    } else {
+        if (!p->lobby->match->terminated) {
+            char * match_terminated = "200\nThe match is terminated";
+            pthread_mutex_lock(&(p->socket_mutex));
+            printf("sto inviando il messaggio a %s\n", p->username);
+            send(p->socket, match_terminated, strlen(match_terminated), 0);
+            pthread_mutex_unlock(&(p->socket_mutex));
+        }
     }
 }
 
@@ -279,6 +287,7 @@ void *handle_client(void *arg)
                 p->isHost = true;
                 lobby->players = NULL;
                 lobby->match = malloc(sizeof(Match));
+                lobby->match->terminated = true;
                 lobby->players = g_list_append(lobby->players, lobby->host);
                 pthread_mutex_lock(&lobbies_mutex);
                 g_hash_table_insert(lobbies, g_strdup(lobby->id), lobby);
@@ -399,6 +408,7 @@ void *handle_client(void *arg)
                     else
                     {
                         g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                        p->lobby->match->terminated = true;
                         pthread_mutex_lock(&(p->lobby->players_mutex));
                         p->lobby->players = g_list_remove(p->lobby->players, p);
                         if (!g_queue_is_empty(p->lobby->queue)){
@@ -568,6 +578,7 @@ void *handle_client(void *arg)
             else
             {
                 g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                p->lobby->match->terminated = true;
                 pthread_mutex_lock(&(p->lobby->players_mutex));
                 p->lobby->players = g_list_remove(p->lobby->players, p);
                 if (!g_queue_is_empty(p->lobby->queue)){
