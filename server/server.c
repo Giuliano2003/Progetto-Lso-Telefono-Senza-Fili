@@ -41,7 +41,7 @@ struct Lobby
     char id[37];
     Player *host;
     int max_players;
-    GSList* players;
+    GList* players;
     GQueue* queue;
     Match* match;
     pthread_mutex_t players_mutex;
@@ -80,7 +80,7 @@ void delete_player(gpointer data) {
 void delete_lobby(gpointer data) {
     Lobby* lobby = (Lobby*) data;
     pthread_mutex_lock(&(lobby->players_mutex));
-    g_slist_free(lobby->players);
+    g_list_free(lobby->players);
     g_queue_free(lobby->queue);
     pthread_mutex_unlock(&(lobby->players_mutex));
     free(lobby->match);
@@ -94,7 +94,7 @@ void fill_buffer(gpointer key, gpointer value, gpointer bufferContext) {
                           lobby->id,
                           lobby->host->username,
                           lobby->max_players,
-                          (int)g_slist_length(lobby->players));
+                          (int)g_list_length(lobby->players));
     bufCont->idx += written;
 }
 
@@ -279,7 +279,7 @@ void *handle_client(void *arg)
                 p->isHost = true;
                 lobby->players = NULL;
                 lobby->match = malloc(sizeof(Match));
-                lobby->players = g_slist_append(lobby->players, lobby->host);
+                lobby->players = g_list_append(lobby->players, lobby->host);
                 pthread_mutex_lock(&lobbies_mutex);
                 g_hash_table_insert(lobbies, g_strdup(lobby->id), lobby);
                 pthread_mutex_unlock(&lobbies_mutex);
@@ -315,7 +315,7 @@ void *handle_client(void *arg)
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                if (g_slist_length(lobby->players) + 1 > lobby->max_players) {
+                if (g_list_length(lobby->players) + 1 > lobby->max_players) {
                     char error_messagge[] = "400\nThe lobby is full, you are in a queue now";
                     pthread_mutex_lock(&(lobby->players_mutex));
                     g_queue_push_tail(lobby->queue, p);
@@ -328,7 +328,7 @@ void *handle_client(void *arg)
                 }
 
                 pthread_mutex_lock(&(lobby->players_mutex));
-                lobby->players = g_slist_append(lobby->players, p);
+                lobby->players = g_list_append(lobby->players, p);
                 p->lobby = lobby;
                 pthread_mutex_unlock(&(lobby->players_mutex));
                 
@@ -378,7 +378,7 @@ void *handle_client(void *arg)
                     break;
                 }
                 if (p->isHost) {
-                    g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                    g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
                     g_queue_foreach(p->lobby->queue, lobby_broadcast_disconnection, p);
                     pthread_mutex_lock(&lobbies_mutex);
                     g_hash_table_remove(lobbies, p->lobby->id);
@@ -398,12 +398,12 @@ void *handle_client(void *arg)
                     }
                     else
                     {
-                        g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                        g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
                         pthread_mutex_lock(&(p->lobby->players_mutex));
-                        p->lobby->players = g_slist_remove(p->lobby->players, p);
+                        p->lobby->players = g_list_remove(p->lobby->players, p);
                         if (!g_queue_is_empty(p->lobby->queue)){
                             Player *queue_player = g_queue_pop_head(p->lobby->queue);
-                            p->lobby->players = g_slist_append(p->lobby->players, queue_player);
+                            p->lobby->players = g_list_append(p->lobby->players, queue_player);
                             char success_message[] = "200\nWelcome to the lobby";
                             pthread_mutex_lock(&(queue_player->socket_mutex));
                             send(queue_player->socket, success_message, sizeof(success_message), 0);
@@ -432,22 +432,31 @@ void *handle_client(void *arg)
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                if (g_slist_length(p->lobby->players) < MIN_PLAYERS) {
+                if (g_list_length(p->lobby->players) < MIN_PLAYERS) {
                     char error_messagge[] = "400\nMinimum 4 players required";
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
+                char clockwise[1];
+                strncpy(clockwise,buffer+4,1);
+                clockwise[1]='\0';
                 Match* match = p->lobby->match;
                 match->turn = 0;
                 match->terminated = false;
                 match->word = NULL;
-                match->clockwise = true;
-                // TODO fetcha la direzione dal client
-
+                match->clockwise = (clockwise[0] != '0');
+                if (!match->clockwise) {
+                    pthread_mutex_lock(&(p->lobby->players_mutex));
+                    p->lobby->players = g_list_reverse(p->lobby->players);
+                    GList* last = g_list_last(p->lobby->players);
+                    p->lobby->players = g_list_delete_link(p->lobby->players, last);
+                    p->lobby->players = g_list_prepend(p->lobby->players, p->lobby->host);
+                    pthread_mutex_unlock(&(p->lobby->players_mutex));
+                }
                 TurnContext context = {p, false, NULL};
-                g_slist_foreach(p->lobby->players, match_turn_broadcast, &context);
+                g_list_foreach(p->lobby->players, match_turn_broadcast, &context);
                 break;
             }
             case OP_SPEAK: {
@@ -470,7 +479,7 @@ void *handle_client(void *arg)
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                GSList* player_node = g_slist_nth(p->lobby->players, p->lobby->match->turn);
+                GList* player_node = g_list_nth(p->lobby->players, p->lobby->match->turn);
                 if (p->id != ((Player*) player_node->data)->id) {
                     char error_messagge[] = "400\nIs not your turn";
                     pthread_mutex_lock(&(p->socket_mutex));
@@ -506,18 +515,18 @@ void *handle_client(void *arg)
                 p->lobby->match->word = g_slist_append(p->lobby->match->word, str);
                 p->lobby->match->turn++;
 
-                GSList* nextNode = player_node->next;
+                GList* nextNode = player_node->next;
                 Player* nextPlayer = NULL;
                 if (nextNode) {
                     nextPlayer = (Player*) nextNode->data;
                 } else {
                     nextPlayer = (Player*) p->lobby->players->data;
                 }
-                if(p->lobby->match->turn >= g_slist_length(p->lobby->players)) {
+                if(p->lobby->match->turn >= g_list_length(p->lobby->players)) {
                     p->lobby->match->terminated = true;
                 }
                 TurnContext context = {nextPlayer, p->lobby->match->terminated, p->lobby->match->word};
-                g_slist_foreach(p->lobby->players, match_turn_broadcast, &context);
+                g_list_foreach(p->lobby->players, match_turn_broadcast, &context);
 
                 break;
             }
@@ -540,7 +549,7 @@ void *handle_client(void *arg)
 
     if (p->lobby) {
         if (p->isHost) {
-            g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+            g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
             g_queue_foreach(p->lobby->queue, lobby_broadcast_disconnection, p);
             pthread_mutex_lock(&lobbies_mutex);
             g_hash_table_remove(lobbies, p->lobby->id);
@@ -556,12 +565,12 @@ void *handle_client(void *arg)
             }
             else
             {
-                g_slist_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
                 pthread_mutex_lock(&(p->lobby->players_mutex));
-                p->lobby->players = g_slist_remove(p->lobby->players, p);
+                p->lobby->players = g_list_remove(p->lobby->players, p);
                 if (!g_queue_is_empty(p->lobby->queue)){
                     Player *queue_player = g_queue_pop_head(p->lobby->queue);
-                    p->lobby->players = g_slist_append(p->lobby->players, queue_player);
+                    p->lobby->players = g_list_append(p->lobby->players, queue_player);
                     char success_message[] = "200\nWelcome to the lobby";
                     pthread_mutex_lock(&(queue_player->socket_mutex));
                     send(queue_player->socket, success_message, sizeof(success_message), 0);
