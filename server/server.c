@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <uuid/uuid.h>
 #include <glib-2.0/glib.h>
+#include "translator.h"
 
 #define PORT 8080
 #define MIN_PLAYERS 2
@@ -23,6 +24,8 @@
 #define OP_SPEAK 111
 #define OP_ANON_LOGIN 200
 
+const char* translator_url = "http://libretranslate:5000/translate";
+
 typedef struct Lobby Lobby;
 typedef struct Match Match;
 
@@ -30,6 +33,7 @@ typedef struct
 {
     char id[37];
     char username[32];
+    char language[3];
     int socket;
     Lobby* lobby;
     bool isHost;
@@ -44,6 +48,7 @@ struct Lobby
     GList* players;
     GQueue* queue;
     Match* match;
+    Translator* translator;
     pthread_mutex_t players_mutex;
 };
 
@@ -84,6 +89,7 @@ void delete_lobby(gpointer data) {
     g_queue_free(lobby->queue);
     pthread_mutex_unlock(&(lobby->players_mutex));
     free(lobby->match);
+    free(lobby->translator);
     g_free(lobby);
 }
 
@@ -224,13 +230,13 @@ void *handle_client(void *arg)
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
-                sanitize_username(buffer+4);
-                if (strlen(buffer+4) < 5) {
+                sanitize_username(buffer+7);
+                if (strlen(buffer+7) < 5) {
                     char * msg = "400\nUsername too short (min: 5)";
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
-                if (strlen(buffer+4) > 15) {
+                if (strlen(buffer+7) > 15) {
                     char * msg = "400\nUsername too long (max: 15)";
                     send(client_socket, msg, strlen(msg), 0);
                     break;
@@ -239,10 +245,12 @@ void *handle_client(void *arg)
                 uuid_t id;
                 uuid_generate_random(id);
                 uuid_unparse(id, p->id);
-                strcpy(p->username, buffer+4);
+                strcpy(p->username, buffer+7);
                 p->socket = client_socket;
                 p->lobby = NULL;
                 p->isHost = false;
+                strncpy(p->language, buffer+4, 2);
+                p->language[2] = '\0';
                 pthread_mutex_init(&(p->socket_mutex), NULL);
                 pthread_mutex_lock(&global_players_mutex);
                 g_hash_table_insert(players, g_strdup(p->id), p);
@@ -252,7 +260,7 @@ void *handle_client(void *arg)
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, buffer, strlen(buffer), 0);
                 pthread_mutex_unlock(&(p->socket_mutex));
-                printf("New Player %s (%s)\n", p->username, p->id);
+                printf("New Player %s (%s) --> %s\n", p->username, p->id, p->language);
                 break;
             }
             case OP_CREATE_LOBBY: {
@@ -288,6 +296,8 @@ void *handle_client(void *arg)
                 lobby->players = NULL;
                 lobby->match = malloc(sizeof(Match));
                 lobby->match->terminated = true;
+                lobby->translator = malloc(sizeof(Translator));
+                translator_init(lobby->translator, translator_url);
                 lobby->players = g_list_append(lobby->players, lobby->host);
                 pthread_mutex_lock(&lobbies_mutex);
                 g_hash_table_insert(lobbies, g_strdup(lobby->id), lobby);
@@ -515,17 +525,8 @@ void *handle_client(void *arg)
                 strncpy(word, buffer+7, len);
                 word[len] = '\0';
                 
-                char str[MAX_PLAYERS*(MAX_LENGTH + 1)] = {0};
-                printf("The parsed word is: %s", word);
-                if (p->lobby->match->turn == 0) {
-                    strncpy(str, word, len+1);
-                } else {
-                    char* word_prev = (char*) g_slist_last(p->lobby->match->word)->data;
-                    snprintf(str, sizeof(str), "%s %s", word_prev, word);
-                }
-                printf("str: %s\n", str);
-                p->lobby->match->word = g_slist_append(p->lobby->match->word, str);
-                p->lobby->match->turn++;
+                printf("The parsed word is: %s\n", word);
+                char* translated_phrase = malloc(MAX_PLAYERS*(MAX_LENGTH + 1));
 
                 GList* nextNode = player_node->next;
                 Player* nextPlayer = NULL;
@@ -534,12 +535,38 @@ void *handle_client(void *arg)
                 } else {
                     nextPlayer = (Player*) p->lobby->players->data;
                 }
+
+                if (p->lobby->match->turn == 0) {
+                    p->lobby->match->word = g_slist_append(p->lobby->match->word, word);
+                    if (translate(p->lobby->translator, word, p->language, nextPlayer->language, translated_phrase, MAX_PLAYERS*(MAX_LENGTH+1)) == 0) {
+                        p->lobby->match->word = g_slist_append(p->lobby->match->word, translated_phrase);
+                    } else {
+                        p->lobby->match->word = g_slist_append(p->lobby->match->word, word);
+                        free(translated_phrase);
+                    }
+                } else {
+                    GSList* prev_node = g_slist_last(p->lobby->match->word);
+                    char* current_phrase = malloc(MAX_LENGTH*MAX_PLAYERS);
+                    printf("The concatenation is %s %s\n", (char*) prev_node->data, word);
+                    snprintf(current_phrase, MAX_LENGTH*MAX_PLAYERS, "%s %s", (char*) prev_node->data, word);
+                    free(prev_node->data);
+                    prev_node->data = current_phrase;
+                    printf("The current phrase is %s\n", (char*) prev_node->data);
+                    if (nextNode) {
+                        if (translate(p->lobby->translator, (char*) prev_node->data, p->language, nextPlayer->language, translated_phrase, MAX_PLAYERS*(MAX_LENGTH+1)) == 0) {
+                            p->lobby->match->word = g_slist_append(p->lobby->match->word, translated_phrase);
+                        } else {
+                            p->lobby->match->word = g_slist_append(p->lobby->match->word, (char*) prev_node->data);
+                            free(translated_phrase);
+                        }
+                    }
+                }
+                p->lobby->match->turn++;
                 if(p->lobby->match->turn >= g_list_length(p->lobby->players)) {
                     p->lobby->match->terminated = true;
                 }
                 TurnContext context = {nextPlayer, p->lobby->match->terminated, p->lobby->match->word};
                 g_list_foreach(p->lobby->players, match_turn_broadcast, &context);
-
                 break;
             }
             default: {
