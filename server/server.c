@@ -23,9 +23,19 @@
 #define OP_LEAVE_LOBBY 103
 #define OP_START_MATCH 110
 #define OP_SPEAK 111
-#define OP_ANON_LOGIN 200
 #define OP_SIGNUP 201
 #define OP_LOGIN 202
+
+/*
+LOBBY CREATED A00
+LOBBY JOINED A01
+LOBBY LEFT A03
+MATCH STARTED A10
+YOUR TURN A11
+NOT YOUR TURN A12
+SIGNED UP B01
+LOGGED IN B02
+*/
 
 const char* translator_url = "http://libretranslate:5000/translate";
 const char* db_path = "users.db";
@@ -387,45 +397,6 @@ void *handle_client(void *arg)
                     char * msg = "400\nUser not found";
                     send(client_socket, msg, strlen(msg), 0);
                 }
-                break;
-            }
-            case OP_ANON_LOGIN: {
-                if (p) {
-                    char * msg = "400\nYou are already authenticated!";
-                    send(client_socket, msg, strlen(msg), 0);
-                    break;
-                }
-                sanitize_username(buffer+7);
-                if (strlen(buffer+7) < 5) {
-                    char * msg = "400\nUsername too short (min: 5)";
-                    send(client_socket, msg, strlen(msg), 0);
-                    break;
-                }
-                if (strlen(buffer+7) > 15) {
-                    char * msg = "400\nUsername too long (max: 15)";
-                    send(client_socket, msg, strlen(msg), 0);
-                    break;
-                }
-                p = g_new(Player, 1);
-                uuid_t id;
-                uuid_generate_random(id);
-                uuid_unparse(id, p->id);
-                strcpy(p->username, buffer+7);
-                p->socket = client_socket;
-                p->lobby = NULL;
-                p->isHost = false;
-                strncpy(p->language, buffer+4, 2);
-                p->language[2] = '\0';
-                pthread_mutex_init(&(p->socket_mutex), NULL);
-                pthread_mutex_lock(&global_players_mutex);
-                g_hash_table_insert(players, g_strdup(p->id), p);
-                pthread_mutex_unlock(&global_players_mutex);
-
-                sprintf(buffer, "Welcome! Your username is %s\n", p->username);
-                pthread_mutex_lock(&(p->socket_mutex));
-                send(client_socket, buffer, strlen(buffer), 0);
-                pthread_mutex_unlock(&(p->socket_mutex));
-                printf("New Player %s (%s) --> %s\n", p->username, p->id, p->language);
                 break;
             }
             case OP_CREATE_LOBBY: {
