@@ -146,7 +146,7 @@ void match_turn_broadcast(gpointer player, gpointer turnContext) {
     char message[MAX_LENGTH*MAX_PLAYERS+200] = {0};
     char body[MAX_LENGTH*MAX_PLAYERS+100] = {0};
     if (context->terminated) {
-        const char* header = "300\nThe match is terminated\nHere is the story of the phrase:\n";
+        const char* header = "304\nThe match is terminated\nHere is the story of the phrase:\n";
         strcpy(body, header);
         int header_len = strlen(header);
 
@@ -165,12 +165,12 @@ void match_turn_broadcast(gpointer player, gpointer turnContext) {
         if (p->id == context->player_turn->id) {
             GSList* node = g_slist_last(context->word);
             if (node) {
-                snprintf(body, sizeof(body), "300\nIs your turn!\nThe current phrase is: %s\n", (char*) node->data);
+                snprintf(body, sizeof(body), "302\nIs your turn!\nThe current phrase is: %s\n", (char*) node->data);
             } else {
-                snprintf(body, sizeof(body), "300\nIs your turn!\nStart with a phrase\n");
+                snprintf(body, sizeof(body), "302\nIs your turn!\nStart with a phrase\n");
             }
         } else {
-            snprintf(body, sizeof(body), "300\nWait for the other players to finish");
+            snprintf(body, sizeof(body), "303\nWait for the other players to finish");
         }
     }
     strncat(message, body, sizeof(message) - strlen(message) - 1);
@@ -329,6 +329,17 @@ void *handle_client(void *arg)
                 Lobby *lobby = (Lobby *) g_hash_table_lookup(lobbies, lobby_id);
                 if(!lobby){
                     char error_messagge[] = "404\nLobby not found";
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
+                if (!lobby->match->terminated) {
+                    char error_messagge[] = "400\nThe match is already started, you are in a queue now";
+                    pthread_mutex_lock(&(lobby->players_mutex));
+                    g_queue_push_tail(lobby->queue, p);
+                    p->lobby = lobby;
+                    pthread_mutex_unlock(&(lobby->players_mutex));
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -567,6 +578,18 @@ void *handle_client(void *arg)
                 }
                 TurnContext context = {nextPlayer, p->lobby->match->terminated, p->lobby->match->word};
                 g_list_foreach(p->lobby->players, match_turn_broadcast, &context);
+                if (p->lobby->match->terminated) {
+                    pthread_mutex_lock(&(p->lobby->players_mutex));
+                    while (g_list_length(p->lobby->players) < p->lobby->max_players && !g_queue_is_empty(p->lobby->queue)) {
+                        Player* queue_player = (Player*) g_queue_pop_head(p->lobby->queue);
+                        p->lobby->players = g_list_append(p->lobby->players, queue_player);
+                        char success_message[] = "200\nWelcome to the lobby";
+                        pthread_mutex_lock(&(queue_player->socket_mutex));
+                        send(queue_player->socket, success_message, sizeof(success_message), 0);
+                        pthread_mutex_unlock(&(queue_player->socket_mutex));
+                    }
+                    pthread_mutex_unlock(&(p->lobby->players_mutex));
+                }
                 break;
             }
             default: {

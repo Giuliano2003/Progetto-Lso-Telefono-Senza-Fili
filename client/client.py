@@ -231,6 +231,18 @@ class ClientGUI:
             messagebox.showwarning("Lobby", "L'host ha lasciato la lobby.")
         elif code == "301":
             messagebox.showwarning("Lobby", "Un giocatore ha lasciato la lobby.")
+        elif code == "302":
+            messagebox.showinfo("Lobby", "Is your turn!")
+            self.enable_turn_entry()  # Abilita sempre la entry/bottone quando è il proprio turno
+        elif code == "303":
+            messagebox.showinfo("Lobby", "Wait for the other players to finish")
+            self.disable_turn_entry()  # Disabilita la entry se non è il proprio turno
+        elif code == "304":
+            messagebox.showinfo("Lobby", "The match is terminated.")
+            self.disable_turn_entry()  # Disabilita la entry a fine partita
+            # Riabilita il tasto start match se host e in lobby
+            if self.is_host and self.in_lobby:
+                self.start_btn.config(state='normal')
         # Reset azione
         self.last_action = None
 
@@ -332,7 +344,8 @@ class ClientGUI:
         # Comando: 111 <len> <frase>
         self.sock.sendall(f"111 {len(phrase):02d} {phrase}".encode())
         self.append_text(f"[Frase inviata]: {phrase}")
-        self.disable_turn_entry()
+        # RIMOSSO: self.disable_turn_entry()
+        # Ora la disabilitazione viene gestita solo da handle_feedback
 
     def send_custom(self):
         msg = self.send_entry.get().strip()
