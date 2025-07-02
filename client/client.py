@@ -146,8 +146,6 @@ class GameClient:
         elif status_code == "A03" or status_code == "A06":
             # Player left lobby or left queue
             self.current_lobby = None
-            self.is_host = False
-            self.root.after(0, self.show_home_screen)
         elif status_code == "A02":
             # Host left, lobby closed
             self.current_lobby = None
@@ -630,6 +628,7 @@ class GameClient:
     def leave_lobby(self):
         message = "103"
         self.send_message(message)
+        self.root.after(0, self.show_home_screen)
     
     def on_closing(self):
         self.disconnect_from_server()
