@@ -121,86 +121,86 @@ class GameClient:
             msg_body = '\n'.join(lines[1:]).strip()
             if msg_body:
                 self.print_lobby_message(msg_body)
-        
-        # Handle different server responses
-        if status_code.startswith('200'):
-            # Login or signup successful
-            if 'Login successful' in message or 'Welcome' in message:
-                self.authenticated = True
-                self.root.after(0, self.show_home_screen)
-            elif 'Lobby created' in message:
-                self.is_host = True
-                # Try to extract lobby ID from server message
-                found_lobby = False
-                for line in lines:
-                    if "Lobby created" in line:
-                        parts = line.split()
-                        # Try to find a lobby id (the last part that is not 'Lobby' or 'created')
-                        for part in reversed(parts):
-                            if part not in ("Lobby", "created", "successfully", "with", "ID:", "ID"):
-                                self.current_lobby = part
-                                found_lobby = True
-                                break
-                        if found_lobby:
-                            break
-                if not found_lobby:
-                    self.current_lobby = "Unknown"
-                self.root.after(0, self.show_lobby_host_screen)
-            elif 'Welcome to the lobby' in message:
-                # Try to extract lobby ID from server message
-                for line in lines:
-                    if "Welcome to the lobby" in line:
-                        parts = line.split()
-                        if len(parts) >= 5:
-                            self.current_lobby = parts[-1]
-                        else:
-                            self.current_lobby = None
-                self.root.after(0, self.show_lobby_screen)
-            elif 'You left' in message:
-                self.current_lobby = None
-                self.is_host = False
-                self.root.after(0, self.show_home_screen)
-            elif 'Signup successful' in message:
-                messagebox.showinfo("Signup", "Signup successful! Please login.")
-                self.root.after(0, self.show_login_screen)
-        elif status_code.startswith('201'):
-            # Signup successful
+
+        # --- NEW PROTOCOL LOGIC ---
+        if status_code == "B02":
+            # Logged in
+            self.authenticated = True
+            self.root.after(0, self.show_home_screen)
+        elif status_code == "B01":
+            # Signed up
             messagebox.showinfo("Signup", "Signup successful! Please login.")
             self.root.after(0, self.show_login_screen)
-        elif status_code.startswith('401'):
-            # Signup failed
-            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Signup failed"
-            self.root.after(0, lambda: messagebox.showerror("Signup Error", error_msg))
-        elif status_code.startswith('402'):
-            # Login failed
-            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Login failed"
-            self.root.after(0, lambda: messagebox.showerror("Login Error", error_msg))
-        elif status_code.startswith('302'):  # Your turn
-            current_phrase = ""
-            if len(lines) > 2 and 'current phrase is:' in lines[2]:
-                current_phrase = lines[2].split('current phrase is: ')[1]
-            elif len(lines) > 2 and 'Start with a phrase' in lines[2]:
-                current_phrase = "Start with a phrase"
-            self.root.after(0, lambda: self.show_your_turn_screen(current_phrase))
-        elif status_code.startswith('303'):  # Wait for other players
-            self.root.after(0, self.show_not_your_turn_screen)
-        elif status_code.startswith('304'):  # Match terminated
-            final_story = ""
-            if len(lines) > 3:
-                final_story = '\n'.join(lines[3:])
-            self.root.after(0, lambda: self.show_match_end_screen(final_story))
-        elif status_code.startswith('300') or status_code.startswith('301'):
-            # Player disconnection
-            if self.is_host:
-                self.root.after(0, self.show_lobby_host_screen)
+        elif status_code == "A00":
+            # Lobby created (host)
+            self.is_host = True
+            if len(lines) > 1:
+                self.current_lobby = lines[1].strip()
             else:
-                self.root.after(0, self.show_home_screen)
-        elif status_code.startswith('400') or status_code.startswith('500'):
-            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Unknown error"
+                self.current_lobby = ""
+            self.root.after(0, self.show_lobby_host_screen)
+        elif status_code == "A01":
+            # Joined lobby (not host)
+            self.is_host = False
+            self.root.after(0, self.show_lobby_screen)
+        elif status_code == "A03" or status_code == "A06":
+            # Player left lobby or left queue
+            self.current_lobby = None
+            self.is_host = False
+            self.root.after(0, self.show_home_screen)
+        elif status_code == "A02":
+            # Host left, lobby closed
+            self.current_lobby = None
+            self.is_host = False
+            self.root.after(0, self.show_home_screen)
+        elif status_code == "A05":
+            # Lobbies list
+            self.parse_lobby_list('\n'.join(lines[1:]))
+        elif status_code == "A10":
+            # Match started, wait for turn
+            self.root.after(0, self.show_not_your_turn_screen)
+        elif status_code == "A11":
+            # Your turn
+            current_phrase = ""
+            for l in lines:
+                if l.startswith("The current phrase is:"):
+                    current_phrase = l.split("The current phrase is:", 1)[1].strip()
+                elif l.startswith("Start with a phrase"):
+                    current_phrase = "Start with a phrase"
+            self.root.after(0, lambda: self.show_your_turn_screen(current_phrase))
+        elif status_code == "A13":
+            # Wait for others
+            self.root.after(0, self.show_not_your_turn_screen)
+        elif status_code == "A12":
+            # Match terminated, show story
+            final_story = ""
+            for idx, l in enumerate(lines):
+                if l.startswith("Here is the story of the phrase:"):
+                    final_story = '\n'.join(lines[idx+1:])
+                    break
+            self.root.after(0, lambda: self.show_match_end_screen(final_story))
+        elif status_code == "A04" or status_code == "A07":
+            # Enqueued in queue
+            messagebox.showinfo("Queue", "You have been added to the queue for this lobby.")
+        elif status_code == "Z01":
+            # Bad request
+            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Bad request"
+            self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
+        elif status_code == "Z02":
+            # Conflict (e.g. already logged in, username exists)
+            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Conflict"
+            self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
+        elif status_code == "Z03":
+            # Unauthorized
+            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Unauthorized"
+            self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
+        elif status_code == "Z00":
+            # Server error
+            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Server error"
             self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
         else:
-            # Handle lobby list response
-            if message and not message.startswith('4') and not message.startswith('5'):
+            # Fallback: try to parse as lobby list if not error/status
+            if message and not status_code.startswith('Z'):
                 self.parse_lobby_list(message)
     
     def parse_lobby_list(self, message):
