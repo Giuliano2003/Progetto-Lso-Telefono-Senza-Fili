@@ -428,7 +428,7 @@ class GameClient:
         self.send_message(message)
         # Immediately show the lobby host screen with a placeholder lobby ID
         self.is_host = True
-        self.current_lobby = "Creating..."  # Placeholder until server response
+        self.current_lobby = ""  # Placeholder until server response
         self.show_lobby_host_screen()
     
     def join_lobby(self, lobby_id):
