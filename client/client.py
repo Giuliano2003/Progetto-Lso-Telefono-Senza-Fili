@@ -433,23 +433,15 @@ class GameClient:
         self.create_styled_button(btn_frame, "Leave", self.leave_lobby, bg_color='#d32f2f').pack(side=tk.RIGHT, padx=5)
         self.create_styled_button(btn_frame, "Start the match!", self.start_match).pack(side=tk.RIGHT, padx=5)
         
-        # Chat area
+        # Chat area (now just a log)
         chat_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
         chat_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
         self.chat_display = scrolledtext.ScrolledText(chat_frame, bg='white', fg='black',
                                                      font=('Arial', 10), state=tk.DISABLED, height=15)
         self.chat_display.pack(fill=tk.BOTH, expand=True)
-        
-        # Message input
-        input_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
-        input_frame.pack(fill=tk.X, pady=5)
-        
-        self.message_entry = self.create_styled_entry(input_frame, width=50)
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
-        self.create_styled_button(input_frame, "Send", self.send_chat_message, width=8).pack(side=tk.RIGHT)
-    
+        # Removed input field and send button
+
     def show_lobby_screen(self):
         self.clear_frame()
         
@@ -463,22 +455,14 @@ class GameClient:
         
         self.create_styled_button(header_frame, "Leave", self.leave_lobby, bg_color='#d32f2f').pack(side=tk.RIGHT)
         
-        # Chat area
+        # Chat area (now just a log)
         chat_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
         chat_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
         self.chat_display = scrolledtext.ScrolledText(chat_frame, bg='white', fg='black',
                                                      font=('Arial', 10), state=tk.DISABLED, height=15)
         self.chat_display.pack(fill=tk.BOTH, expand=True)
-        
-        # Message input
-        input_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
-        input_frame.pack(fill=tk.X, pady=5)
-        
-        self.message_entry = self.create_styled_entry(input_frame, width=50)
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
-        self.create_styled_button(input_frame, "Send", self.send_chat_message, width=8).pack(side=tk.RIGHT)
+        # Removed input field and send button
     
     def show_your_turn_screen(self, current_phrase):
         self.clear_frame()
