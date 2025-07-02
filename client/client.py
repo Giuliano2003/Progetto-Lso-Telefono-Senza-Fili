@@ -1,418 +1,685 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
 import socket
 import threading
-import tkinter as tk
-from tkinter import simpledialog, messagebox, scrolledtext, ttk
+import time
 
-SERVER_IP = '127.0.0.1'
-SERVER_PORT = 8080
-
-LANGUAGES = {
-    "Inglese": "en",
-    "Spagnolo": "es",
-    "Francese": "fr",
-    "Italiano": "it",
-    "Tedesco": "de"
-}
-
-class ClientGUI:
-    def __init__(self, master):
-        self.master = master
-        master.title("Telefono Senza Fili - Client")
-        master.geometry("700x600")
-        master.configure(bg="#f0f4f8")
-        self.sock = None
-        self.username = None
+class GameClient:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Multilingual Word Game")
+        self.root.geometry("800x600")
+        self.root.configure(bg='#2c2c2c')
+        
+        # Connection state
+        self.socket = None
+        self.connected = False
+        self.authenticated = False
+        self.player_name = ""
+        self.current_lobby = None
         self.is_host = False
-        self.in_lobby = False
+        self.lobbies = []
+        self.receive_thread = None
+        self.lobby_refresh_job = None  # Track the after job for lobby refresh
+        
+        # Create main container
+        self.main_frame = tk.Frame(self.root, bg='#2c2c2c')
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Start message receiving thread
+        self.connect_to_server()  # Connect once at startup
+        # Move GUI initialization after connection
+        self.root.after(0, self.show_login_screen)
 
-        # Font settings
-        self.font_main = ("Segoe UI", 11)
-        self.font_title = ("Segoe UI", 16, "bold")
-        self.font_btn = ("Segoe UI", 11, "bold")
-
-        # Title
-        self.title_label = tk.Label(master, text="Telefono Senza Fili", font=self.font_title, bg="#f0f4f8", fg="#2d415a")
-        self.title_label.pack(pady=(15, 5))
-
-        # Separator
-        ttk.Separator(master, orient='horizontal').pack(fill='x', padx=10, pady=5)
-
-        # UI Elements
-        self.text_area = scrolledtext.ScrolledText(master, height=12, width=65, state='disabled', font=self.font_main, bg="#f8fafc", fg="#222")
-        self.text_area.pack(padx=15, pady=(5, 15))
-
-        # Username frame
-        self.user_frame = tk.Frame(master, bg="#f0f4f8")
-        self.user_frame.pack(pady=(0, 10))
-
-        # Language selection combobox
-        self.lang_var = tk.StringVar(value="Italiano")
-        self.lang_combo = ttk.Combobox(self.user_frame, textvariable=self.lang_var, state="readonly", width=12, font=self.font_main)
-        self.lang_combo['values'] = list(LANGUAGES.keys())
-        self.lang_combo.grid(row=0, column=0, padx=(0, 10))
-
-        self.entry = tk.Entry(self.user_frame, width=15, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2)
-        self.entry.grid(row=0, column=1, padx=(0, 10))
-        self.entry.insert(0, "Username...")
-        self.entry.bind("<FocusIn>", self.clear_username_placeholder)
-        self.entry.bind("<FocusOut>", self.restore_username_placeholder)
-
-        self.pw_entry = tk.Entry(self.user_frame, width=15, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2, show="*")
-        self.pw_entry.grid(row=0, column=2, padx=(0, 10))
-        self.pw_entry.insert(0, "Password...")
-        self.pw_entry.bind("<FocusIn>", self.clear_pw_placeholder)
-        self.pw_entry.bind("<FocusOut>", self.restore_pw_placeholder)
-
-        self.signup_btn = tk.Button(self.user_frame, text="Signup", command=self.signup, font=self.font_btn, bg="#43d17a", fg="white", activebackground="#2fa75a", width=10, relief=tk.RAISED, bd=2)
-        self.signup_btn.grid(row=0, column=3, padx=(0, 5))
-
-        self.login_btn = tk.Button(self.user_frame, text="Login", command=self.login, font=self.font_btn, bg="#4f8cff", fg="white", activebackground="#357ae8", width=10, relief=tk.RAISED, bd=2)
-        self.login_btn.grid(row=0, column=4)
-
-        # Lobby actions frame
-        self.lobby_frame = tk.Frame(master, bg="#f0f4f8")
-        self.lobby_frame.pack(pady=(0, 10))
-
-        self.lobbies_btn = tk.Button(self.lobby_frame, text="Mostra Lobby", command=self.get_lobbies, state='disabled', font=self.font_btn, bg="#4f8cff", fg="white", activebackground="#357ae8", width=14, relief=tk.RAISED, bd=2)
-        self.lobbies_btn.grid(row=0, column=0, padx=5)
-
-        self.create_btn = tk.Button(self.lobby_frame, text="Crea Lobby", command=self.create_lobby, state='disabled', font=self.font_btn, bg="#4f8cff", fg="white", activebackground="#357ae8", width=14, relief=tk.RAISED, bd=2)
-        self.create_btn.grid(row=0, column=1, padx=5)
-
-        self.leave_btn = tk.Button(self.lobby_frame, text="Esci da Lobby", command=self.leave_lobby, state='disabled', font=self.font_btn, bg="#ff6b6b", fg="white", activebackground="#e84141", width=14, relief=tk.RAISED, bd=2)
-        self.leave_btn.grid(row=0, column=2, padx=5)
-
-        # Join lobby frame
-        self.join_frame = tk.Frame(master, bg="#f0f4f8")
-        self.join_frame.pack(pady=(0, 10))
-
-        self.lobby_id_entry = tk.Entry(self.join_frame, width=32, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2)
-        self.lobby_id_entry.grid(row=0, column=0, padx=(0, 10))
-        self.lobby_id_entry.insert(0, "ID Lobby per entrare...")
-        self.lobby_id_entry.bind("<FocusIn>", self.clear_lobbyid_placeholder)
-        self.lobby_id_entry.bind("<FocusOut>", self.restore_lobbyid_placeholder)
-
-        self.join_btn = tk.Button(self.join_frame, text="Entra in Lobby", command=self.join_lobby, state='disabled', font=self.font_btn, bg="#43d17a", fg="white", activebackground="#2fa75a", width=14, relief=tk.RAISED, bd=2)
-        self.join_btn.grid(row=0, column=1)
-
-        self.master.protocol("WM_DELETE_WINDOW", self.on_close)
-
-        # Stato per feedback
-        self.last_action = None
-
-        # --- Campo invio manuale ---
-        self.send_frame = tk.Frame(master, bg="#f0f4f8")
-        self.send_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
-
-        self.send_entry = tk.Entry(self.send_frame, width=45, font=self.font_main, relief=tk.GROOVE, bd=2)
-        self.send_entry.pack(side=tk.LEFT, padx=(0, 10), ipady=2)
-        self.send_entry.insert(0, "Scrivi richiesta TCP...")
-
-        self.send_entry.bind("<FocusIn>", self.clear_send_placeholder)
-        self.send_entry.bind("<FocusOut>", self.restore_send_placeholder)
-        self.send_entry.bind("<Return>", lambda event: self.send_custom())
-
-        self.send_btn = tk.Button(self.send_frame, text="Invia", command=self.send_custom, font=self.font_btn, bg="#222", fg="white", activebackground="#444", width=10, relief=tk.RAISED, bd=2)
-        self.send_btn.pack(side=tk.LEFT)
-
-        # --- Pulsante per startare il match (solo host) ---
-        self.start_frame = tk.Frame(master, bg="#f0f4f8")
-        # Sposta subito sopra la barra invio manuale
-        self.start_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 2))
-        self.start_btn = tk.Button(self.start_frame, text="Start Match", command=self.start_match, state='disabled', font=self.font_btn, bg="#ffb347", fg="white", activebackground="#e89c1a", width=14, relief=tk.RAISED, bd=2)
-        self.start_btn.pack(side=tk.LEFT)
-
-        # --- Barra invio frase per il turno ---
-        self.turn_frame = tk.Frame(master, bg="#f0f4f8")
-        self.turn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 2))
-        self.turn_entry = tk.Entry(self.turn_frame, width=45, font=self.font_main, relief=tk.GROOVE, bd=2, state='disabled')
-        self.turn_entry.pack(side=tk.LEFT, padx=(0, 10), ipady=2)
-        self.turn_entry.insert(0, "Scrivi la tua frase...")
-        self.turn_entry.bind("<FocusIn>", self.clear_turn_placeholder)
-        self.turn_entry.bind("<FocusOut>", self.restore_turn_placeholder)
-        self.turn_entry.bind("<Return>", lambda event: self.send_turn_phrase())
-        self.turn_send_btn = tk.Button(self.turn_frame, text="Invia Frase", command=self.send_turn_phrase, font=self.font_btn, bg="#43d17a", fg="white", activebackground="#2fa75a", width=12, relief=tk.RAISED, bd=2, state='disabled')
-        self.turn_send_btn.pack(side=tk.LEFT)
-
-    # Placeholder handlers
-    def clear_username_placeholder(self, event):
-        if self.entry.get() == "Username...":
-            self.entry.delete(0, tk.END)
-            self.entry.config(fg='black')
-
-    def restore_username_placeholder(self, event):
-        if not self.entry.get():
-            self.entry.insert(0, "Username...")
-            self.entry.config(fg='grey')
-
-    def clear_pw_placeholder(self, event):
-        if self.pw_entry.get() == "Password...":
-            self.pw_entry.delete(0, tk.END)
-            self.pw_entry.config(fg='black', show="*")
-
-    def restore_pw_placeholder(self, event):
-        if not self.pw_entry.get():
-            self.pw_entry.insert(0, "Password...")
-            self.pw_entry.config(fg='grey', show="*")
-
-    def clear_lobbyid_placeholder(self, event):
-        if self.lobby_id_entry.get() == "ID Lobby per entrare...":
-            self.lobby_id_entry.delete(0, tk.END)
-            self.lobby_id_entry.config(fg='black')
-
-    def restore_lobbyid_placeholder(self, event):
-        if not self.lobby_id_entry.get():
-            self.lobby_id_entry.insert(0, "ID Lobby per entrare...")
-            self.lobby_id_entry.config(fg='grey')
-
-    def clear_send_placeholder(self, event):
-        if self.send_entry.get() == "Scrivi richiesta TCP...":
-            self.send_entry.delete(0, tk.END)
-            self.send_entry.config(fg='black')
-
-    def restore_send_placeholder(self, event):
-        if not self.send_entry.get():
-            self.send_entry.insert(0, "Scrivi richiesta TCP...")
-            self.send_entry.config(fg='grey')
-
-    def clear_turn_placeholder(self, event):
-        if self.turn_entry.get() == "Scrivi la tua frase...":
-            self.turn_entry.delete(0, tk.END)
-            self.turn_entry.config(fg='black')
-
-    def restore_turn_placeholder(self, event):
-        if not self.turn_entry.get():
-            self.turn_entry.insert(0, "Scrivi la tua frase...")
-            self.turn_entry.config(fg='grey')
-
-    def connect(self):
-        if self.sock:
-            return
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.connect((SERVER_IP, SERVER_PORT))
-        threading.Thread(target=self.listen_server, daemon=True).start()
-
-    def listen_server(self):
-        while True:
+    def create_styled_button(self, parent, text, command, bg_color='#4a4a4a', fg_color='white', width=15):
+        btn = tk.Button(parent, text=text, command=command, 
+                       bg=bg_color, fg=fg_color, font=('Arial', 10, 'bold'),
+                       relief=tk.FLAT, padx=10, pady=5, width=width,
+                       activebackground='#5a5a5a', activeforeground='white')
+        return btn
+    
+    def create_styled_entry(self, parent, placeholder="", width=20):
+        entry = tk.Entry(parent, font=('Arial', 10), width=width,
+                        bg='white', fg='black', relief=tk.FLAT, bd=5)
+        return entry
+    
+    def create_styled_label(self, parent, text, font_size=12, color='white'):
+        label = tk.Label(parent, text=text, bg='#2c2c2c', fg=color,
+                        font=('Arial', font_size))
+        return label
+    
+    def clear_frame(self):
+        # Stop lobby refresh when leaving home screen
+        if hasattr(self, 'lobby_refresh_job') and self.lobby_refresh_job:
+            self.root.after_cancel(self.lobby_refresh_job)
+            self.lobby_refresh_job = None
+        for widget in self.main_frame.winfo_children():
+            widget.destroy()
+    
+    def connect_to_server(self):
+        if self.connected:
+            return True
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect(('localhost', 8080))  # Adjust IP as needed
+            self.connected = True
+            
+            # Start receiving messages
+            self.receive_thread = threading.Thread(target=self.receive_messages, daemon=True)
+            self.receive_thread.start()
+            
+            return True
+        except Exception as e:
+            messagebox.showerror("Connection Error", f"Failed to connect to server: {e}")
+            return False
+    
+    def disconnect_from_server(self):
+        if self.socket:
             try:
-                data = self.sock.recv(1024)
-                if not data:
-                    break
-                msg = data.decode()
-                self.append_text(msg)
-                self.handle_feedback(msg)
+                self.connected = False
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+
+    def send_message(self, message):
+        if self.socket and self.connected:
+            try:
+                self.socket.send(message.encode())
+                return True
             except Exception as e:
+                messagebox.showerror("Send Error", f"Failed to send message: {e}")
+                self.disconnect_from_server()
+                return False
+        return False
+    
+    def receive_messages(self):
+        while self.connected:
+            try:
+                if self.socket:
+                    message = self.socket.recv(4096).decode()
+                    if message:
+                        self.handle_server_message(message)
+                    else:
+                        break
+            except Exception as e:
+                if self.connected:
+                    print(f"Receive error: {e}")
                 break
-
-    def append_text(self, msg):
-        self.text_area.config(state='normal')
-        # Aggiungi una riga vuota tra i messaggi
-        self.text_area.insert(tk.END, msg + "\n\n")
-        self.text_area.see(tk.END)
-        self.text_area.config(state='disabled')
-
-    def handle_feedback(self, msg):
-        # Analizza il codice di risposta e mostra feedback
-        lines = msg.strip().split('\n')
-        if not lines or not lines[0]:
+        self.connected = False
+    
+    def handle_server_message(self, message):
+        lines = message.strip().split('\n')
+        if not lines:
             return
-        code = lines[0]
-        # Feedback in base all'ultima azione
-        if code == "200":
-            if self.last_action == "signup":
-                messagebox.showinfo("Signup", "Registrazione effettuata con successo! Ora puoi fare login.")
-            elif self.last_action == "login":
-                messagebox.showinfo("Login", "Login effettuato con successo!")
-                self.lobbies_btn.config(state='normal')
-                self.create_btn.config(state='normal')
-                self.join_btn.config(state='normal')
-                self.leave_btn.config(state='normal')
-                self.login_btn.config(state='disabled')
-                self.signup_btn.config(state='disabled')
-                self.entry.config(state='disabled')
-                self.pw_entry.config(state='disabled')
-                self.lang_combo.config(state='disabled')
-            elif self.last_action == "create_lobby":
-                messagebox.showinfo("Lobby", "Lobby creata con successo!")
-                self.create_btn.config(state='disabled')
-                self.join_btn.config(state='disabled')
-            elif self.last_action == "join_lobby":
-                messagebox.showinfo("Lobby", "Entrato nella lobby!")
-                self.create_btn.config(state='disabled')
-                self.join_btn.config(state='disabled')
-            elif self.last_action == "leave_lobby":
-                messagebox.showinfo("Lobby", "Uscito dalla lobby!")
-                self.create_btn.config(state='normal')
-                self.join_btn.config(state='normal')
-            elif self.last_action == "get_lobbies":
-                # Mostra feedback anche se la lista è vuota
-                if len(lines) > 1 and lines[1]:
-                    messagebox.showinfo("Lobby", "Lista lobby aggiornata.")
-                else:
-                    messagebox.showinfo("Lobby", "Nessuna lobby disponibile.")
-        elif code == "400":
-            messagebox.showerror("Errore", "\n".join(lines[1:]))
-        elif code == "404":
-            messagebox.showerror("Errore", "Lobby non trovata.")
-            # Non disabilitare i tasti in caso di errore 404
-        elif code == "500":
-            messagebox.showerror("Errore", "\n".join(lines[1:]))
-        elif code == "300":
-            messagebox.showwarning("Lobby", "L'host ha lasciato la lobby.")
-        elif code == "301":
-            messagebox.showwarning("Lobby", "Un giocatore ha lasciato la lobby.")
-        elif code == "302":
-            messagebox.showinfo("Lobby", "Is your turn!")
-            self.enable_turn_entry()  # Abilita sempre la entry/bottone quando è il proprio turno
-        elif code == "303":
-            messagebox.showinfo("Lobby", "Wait for the other players to finish")
-            self.disable_turn_entry()  # Disabilita la entry se non è il proprio turno
-        elif code == "304":
-            messagebox.showinfo("Lobby", "The match is terminated.")
-            self.disable_turn_entry()  # Disabilita la entry a fine partita
-            # Riabilita il tasto start match se host e in lobby
-            if self.is_host and self.in_lobby:
-                self.start_btn.config(state='normal')
-        # Reset azione
-        self.last_action = None
 
-        # Gestione messaggi di turno
-        if code == "300":
-            # Cerca se è il proprio turno
-            for line in lines:
-                if "Is your turn!" in line:
-                    self.enable_turn_entry()
-                    break
+        status_code = lines[0]
+        # --- LOBBY MESSAGE HANDLING ---
+        # If in a lobby window, print all server messages in gray italics (without code)
+        if self.in_lobby_window():
+            # Remove status code and print the rest as gray italics
+            msg_body = '\n'.join(lines[1:]).strip()
+            if msg_body:
+                self.print_lobby_message(msg_body)
+        
+        # Handle different server responses
+        if status_code.startswith('200'):
+            # Login or signup successful
+            if 'Login successful' in message or 'Welcome' in message:
+                self.authenticated = True
+                self.root.after(0, self.show_home_screen)
+            elif 'Lobby created' in message:
+                self.is_host = True
+                # Try to extract lobby ID from server message
+                found_lobby = False
+                for line in lines:
+                    if "Lobby created" in line:
+                        parts = line.split()
+                        # Try to find a lobby id (the last part that is not 'Lobby' or 'created')
+                        for part in reversed(parts):
+                            if part not in ("Lobby", "created", "successfully", "with", "ID:", "ID"):
+                                self.current_lobby = part
+                                found_lobby = True
+                                break
+                        if found_lobby:
+                            break
+                if not found_lobby:
+                    self.current_lobby = "Unknown"
+                self.root.after(0, self.show_lobby_host_screen)
+            elif 'Welcome to the lobby' in message:
+                # Try to extract lobby ID from server message
+                for line in lines:
+                    if "Welcome to the lobby" in line:
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            self.current_lobby = parts[-1]
+                        else:
+                            self.current_lobby = None
+                self.root.after(0, self.show_lobby_screen)
+            elif 'You left' in message:
+                self.current_lobby = None
+                self.is_host = False
+                self.root.after(0, self.show_home_screen)
+            elif 'Signup successful' in message:
+                messagebox.showinfo("Signup", "Signup successful! Please login.")
+                self.root.after(0, self.show_login_screen)
+        elif status_code.startswith('201'):
+            # Signup successful
+            messagebox.showinfo("Signup", "Signup successful! Please login.")
+            self.root.after(0, self.show_login_screen)
+        elif status_code.startswith('401'):
+            # Signup failed
+            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Signup failed"
+            self.root.after(0, lambda: messagebox.showerror("Signup Error", error_msg))
+        elif status_code.startswith('402'):
+            # Login failed
+            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Login failed"
+            self.root.after(0, lambda: messagebox.showerror("Login Error", error_msg))
+        elif status_code.startswith('302'):  # Your turn
+            current_phrase = ""
+            if len(lines) > 2 and 'current phrase is:' in lines[2]:
+                current_phrase = lines[2].split('current phrase is: ')[1]
+            elif len(lines) > 2 and 'Start with a phrase' in lines[2]:
+                current_phrase = "Start with a phrase"
+            self.root.after(0, lambda: self.show_your_turn_screen(current_phrase))
+        elif status_code.startswith('303'):  # Wait for other players
+            self.root.after(0, self.show_not_your_turn_screen)
+        elif status_code.startswith('304'):  # Match terminated
+            final_story = ""
+            if len(lines) > 3:
+                final_story = '\n'.join(lines[3:])
+            self.root.after(0, lambda: self.show_match_end_screen(final_story))
+        elif status_code.startswith('300') or status_code.startswith('301'):
+            # Player disconnection
+            if self.is_host:
+                self.root.after(0, self.show_lobby_host_screen)
             else:
-                self.disable_turn_entry()
-
-    def signup(self):
-        username = self.entry.get().strip()
-        password = self.pw_entry.get().strip()
-        if username == "Username..." or not username:
-            messagebox.showerror("Errore", "Inserisci un username valido.")
-            return
-        if password == "Password..." or not password:
-            messagebox.showerror("Errore", "Inserisci una password valida.")
-            return
-        if not (5 <= len(username) <= 15):
-            messagebox.showerror("Errore", "Username deve essere tra 5 e 15 caratteri.")
-            return
-        lang_name = self.lang_var.get()
-        lang_code = LANGUAGES.get(lang_name, "it")
-        self.connect()
-        self.sock.sendall(f"201 {lang_code} {username} {password}".encode())
-        self.last_action = "signup"
-
+                self.root.after(0, self.show_home_screen)
+        elif status_code.startswith('400') or status_code.startswith('500'):
+            error_msg = '\n'.join(lines[1:]) if len(lines) > 1 else "Unknown error"
+            self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
+        else:
+            # Handle lobby list response
+            if message and not message.startswith('4') and not message.startswith('5'):
+                self.parse_lobby_list(message)
+    
+    def parse_lobby_list(self, message):
+        self.lobbies = []
+        lines = message.strip().split('\n')
+        for line in lines:
+            if line.strip():
+                parts = line.split()
+                if len(parts) >= 4:
+                    lobby_id = parts[0]
+                    host_name = parts[1]
+                    max_players = parts[2]
+                    current_players = parts[3]
+                    self.lobbies.append({
+                        'id': lobby_id,
+                        'host': host_name,
+                        'players': f"{current_players}/{max_players}"
+                    })
+        self.root.after(0, self.refresh_lobby_list)
+    
+    def show_login_screen(self):
+        self.clear_frame()
+        
+        # Login form
+        login_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        login_frame.pack(expand=True)
+        
+        # Title
+        title = self.create_styled_label(login_frame, "Login", 16, 'white')
+        title.pack(pady=20)
+        
+        # Username
+        self.create_styled_label(login_frame, "Username").pack(pady=5)
+        self.username_entry = self.create_styled_entry(login_frame, width=30)
+        self.username_entry.pack(pady=5)
+        
+        # Password
+        self.create_styled_label(login_frame, "Password").pack(pady=5)
+        self.password_entry = self.create_styled_entry(login_frame, width=30)
+        self.password_entry.config(show="*")
+        self.password_entry.pack(pady=5)
+        
+        # Language selection
+        self.create_styled_label(login_frame, "Language").pack(pady=5)
+        self.language_var = tk.StringVar(value="en")
+        lang_frame = tk.Frame(login_frame, bg='#2c2c2c')
+        lang_frame.pack(pady=5)
+        
+        languages = [("English", "en"), ("Italian", "it"), ("Spanish", "es"), ("French", "fr")]
+        for text, code in languages:
+            tk.Radiobutton(lang_frame, text=text, variable=self.language_var, value=code,
+                          bg='#2c2c2c', fg='white', selectcolor='#4a4a4a',
+                          activebackground='#2c2c2c', activeforeground='white').pack(side=tk.LEFT, padx=5)
+        
+        # Buttons
+        btn_frame = tk.Frame(login_frame, bg='#2c2c2c')
+        btn_frame.pack(pady=20)
+        
+        self.create_styled_button(btn_frame, "Play!", self.login).pack(side=tk.LEFT, padx=5)
+        self.create_styled_button(btn_frame, "Sign Up", self.show_signup_screen, bg_color='#6a6a6a').pack(side=tk.LEFT, padx=5)
+        self.create_styled_button(btn_frame, "Anonymous", self.anonymous_login, bg_color='#8a8a8a').pack(side=tk.LEFT, padx=5)
+    
+    def show_signup_screen(self):
+        self.clear_frame()
+        
+        signup_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        signup_frame.pack(expand=True)
+        
+        title = self.create_styled_label(signup_frame, "Sign Up", 16, 'white')
+        title.pack(pady=20)
+        
+        # Username
+        self.create_styled_label(signup_frame, "Username").pack(pady=5)
+        self.signup_username_entry = self.create_styled_entry(signup_frame, width=30)
+        self.signup_username_entry.pack(pady=5)
+        
+        # Password
+        self.create_styled_label(signup_frame, "Password").pack(pady=5)
+        self.signup_password_entry = self.create_styled_entry(signup_frame, width=30)
+        self.signup_password_entry.config(show="*")
+        self.signup_password_entry.pack(pady=5)
+        
+        # Language
+        self.create_styled_label(signup_frame, "Language").pack(pady=5)
+        self.signup_language_var = tk.StringVar(value="en")
+        lang_frame = tk.Frame(signup_frame, bg='#2c2c2c')
+        lang_frame.pack(pady=5)
+        
+        languages = [("English", "en"), ("Italian", "it"), ("Spanish", "es"), ("French", "fr")]
+        for text, code in languages:
+            tk.Radiobutton(lang_frame, text=text, variable=self.signup_language_var, value=code,
+                          bg='#2c2c2c', fg='white', selectcolor='#4a4a4a',
+                          activebackground='#2c2c2c', activeforeground='white').pack(side=tk.LEFT, padx=5)
+        
+        btn_frame = tk.Frame(signup_frame, bg='#2c2c2c')
+        btn_frame.pack(pady=20)
+        
+        self.create_styled_button(btn_frame, "Sign Up", self.signup).pack(side=tk.LEFT, padx=5)
+        self.create_styled_button(btn_frame, "Back to Login", self.show_login_screen, bg_color='#6a6a6a').pack(side=tk.LEFT, padx=5)
+    
     def login(self):
-        username = self.entry.get().strip()
-        password = self.pw_entry.get().strip()
-        if username == "Username..." or not username:
-            messagebox.showerror("Errore", "Inserisci un username valido.")
+        if not self.connected:
+            if not self.connect_to_server():
+                return
+        username = self.username_entry.get().strip()
+        password = self.password_entry.get().strip()
+        if not username or not password:
+            messagebox.showerror("Error", "Please enter username and password")
             return
-        if password == "Password..." or not password:
-            messagebox.showerror("Errore", "Inserisci una password valida.")
+        self.player_name = username
+        message = f"202 {username} {password}"
+        self.send_message(message)
+    
+    def signup(self):
+        if not self.connected:
+            if not self.connect_to_server():
+                return
+        username = self.signup_username_entry.get().strip()
+        password = self.signup_password_entry.get().strip()
+        language = self.signup_language_var.get()
+        if not username or not password:
+            messagebox.showerror("Error", "Please enter username and password")
             return
-        self.connect()
-        self.sock.sendall(f"202 {username} {password}".encode())
-        self.username = username
-        self.last_action = "login"
+        message = f"201 {language} {username} {password}"
+        self.send_message(message)
+    
+    def anonymous_login(self):
+        if not self.connected:
+            if not self.connect_to_server():
+                return
+        username = self.username_entry.get().strip()
+        language = self.language_var.get()
+        if not username:
+            messagebox.showerror("Error", "Please enter a username")
+            return
+        self.player_name = username
+        message = f"200 {language} {username}"
+        self.send_message(message)
+    
+    def show_home_screen(self):
+        self.clear_frame()
+        self.authenticated = True
 
-    def get_lobbies(self):
-        self.sock.sendall(b"102")
-        self.last_action = "get_lobbies"
+        # Stop any previous lobby refresh
+        if hasattr(self, 'lobby_refresh_job') and self.lobby_refresh_job:
+            self.root.after_cancel(self.lobby_refresh_job)
+            self.lobby_refresh_job = None
 
+        # Header
+        header_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        header_frame.pack(fill=tk.X, pady=10)
+        
+        welcome_label = self.create_styled_label(header_frame, f"Hello {self.player_name}", 16, 'white')
+        welcome_label.pack(side=tk.LEFT)
+        
+        self.create_styled_button(header_frame, "Create a lobby", self.create_lobby).pack(side=tk.RIGHT)
+        
+        # Lobby list
+        lobby_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        lobby_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Headers
+        headers_frame = tk.Frame(lobby_frame, bg='#4a4a4a')
+        headers_frame.pack(fill=tk.X, pady=5)
+        
+        self.create_styled_label(headers_frame, "ID", 10, 'white').pack(side=tk.LEFT, padx=10)
+        self.create_styled_label(headers_frame, "Host", 10, 'white').pack(side=tk.LEFT, padx=50)
+        self.create_styled_label(headers_frame, "Players", 10, 'white').pack(side=tk.LEFT, padx=50)
+        
+        # Scrollable lobby list
+        self.lobby_list_frame = tk.Frame(lobby_frame, bg='#2c2c2c')
+        self.lobby_list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Request lobby list
+        self.send_message("102")
+        # Start periodic lobby refresh
+        self.schedule_lobby_refresh()
+
+    def schedule_lobby_refresh(self):
+        # Fetch lobbies every 10 seconds if on home screen
+        def refresh():
+            # Only refresh if still on home screen (lobby_list_frame exists)
+            if hasattr(self, 'lobby_list_frame') and self.lobby_list_frame.winfo_exists():
+                self.send_message("102")
+                self.lobby_refresh_job = self.root.after(10000, refresh)
+            else:
+                self.lobby_refresh_job = None
+        # Start the first refresh
+        self.lobby_refresh_job = self.root.after(10000, refresh)
+
+    def refresh_lobby_list(self):
+        # Defensive: Only refresh if the frame still exists
+        if not hasattr(self, 'lobby_list_frame'):
+            return
+        try:
+            if not self.lobby_list_frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        # Clear existing lobby entries
+        for widget in self.lobby_list_frame.winfo_children():
+            widget.destroy()
+        
+        # Add lobby entries
+        for lobby in self.lobbies:
+            lobby_row = tk.Frame(self.lobby_list_frame, bg='#3a3a3a')
+            lobby_row.pack(fill=tk.X, pady=2, padx=5)
+            
+            # Truncate long lobby IDs for display
+            display_id = lobby['id'][:20] + "..." if len(lobby['id']) > 20 else lobby['id']
+            self.create_styled_label(lobby_row, display_id, 10, 'white').pack(side=tk.LEFT, padx=10)
+            self.create_styled_label(lobby_row, lobby['host'], 10, 'white').pack(side=tk.LEFT, padx=50)
+            self.create_styled_label(lobby_row, lobby['players'], 10, 'white').pack(side=tk.LEFT, padx=50)
+            
+            join_btn = self.create_styled_button(lobby_row, "Join", 
+                                               lambda lid=lobby['id']: self.join_lobby(lid), 
+                                               bg_color='#5a5a5a', width=8)
+            join_btn.pack(side=tk.RIGHT, padx=10)
+    
     def create_lobby(self):
-        self.sock.sendall(b"100")
-        self.last_action = "create_lobby"
+        if not self.authenticated:
+            messagebox.showerror("Error", "You must be logged in to create a lobby.")
+            return
+        message = "100"
+        self.send_message(message)
+        # Immediately show the lobby host screen with a placeholder lobby ID
         self.is_host = True
-        self.in_lobby = True
-        self.update_start_btn_state()
-        self.create_btn.config(state='disabled')  # Disattiva dopo creazione
-        self.join_btn.config(state='disabled')    # Disattiva dopo creazione
+        self.current_lobby = "Creating..."  # Placeholder until server response
+        self.show_lobby_host_screen()
+    
+    def join_lobby(self, lobby_id):
+        self.current_lobby = lobby_id
+        message = f"101 {lobby_id}"
+        self.send_message(message)
+        self.show_lobby_screen()
+    
+    def show_lobby_host_screen(self):
+        self.clear_frame()
+        
+        # Header
+        header_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        header_frame.pack(fill=tk.X, pady=10)
+        
+        lobby_title = self.current_lobby[:20] + "..." if self.current_lobby and len(self.current_lobby) > 20 else self.current_lobby
+        title_label = self.create_styled_label(header_frame, f"Lobby {lobby_title}", 14, 'white')
+        title_label.pack(side=tk.LEFT)
+        
+        btn_frame = tk.Frame(header_frame, bg='#2c2c2c')
+        btn_frame.pack(side=tk.RIGHT)
+        
+        self.create_styled_button(btn_frame, "Leave", self.leave_lobby, bg_color='#d32f2f').pack(side=tk.RIGHT, padx=5)
+        self.create_styled_button(btn_frame, "Start the match!", self.start_match).pack(side=tk.RIGHT, padx=5)
+        
+        # Chat area
+        chat_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        chat_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.chat_display = scrolledtext.ScrolledText(chat_frame, bg='white', fg='black',
+                                                     font=('Arial', 10), state=tk.DISABLED, height=15)
+        self.chat_display.pack(fill=tk.BOTH, expand=True)
+        
+        # Message input
+        input_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        input_frame.pack(fill=tk.X, pady=5)
+        
+        self.message_entry = self.create_styled_entry(input_frame, width=50)
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        self.create_styled_button(input_frame, "Send", self.send_chat_message, width=8).pack(side=tk.RIGHT)
+    
+    def show_lobby_screen(self):
+        self.clear_frame()
+        
+        # Header
+        header_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        header_frame.pack(fill=tk.X, pady=10)
+        
+        lobby_title = self.current_lobby[:20] + "..." if self.current_lobby and len(self.current_lobby) > 20 else self.current_lobby
+        title_label = self.create_styled_label(header_frame, f"Lobby {lobby_title}", 14, 'white')
+        title_label.pack(side=tk.LEFT)
+        
+        self.create_styled_button(header_frame, "Leave", self.leave_lobby, bg_color='#d32f2f').pack(side=tk.RIGHT)
+        
+        # Chat area
+        chat_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        chat_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.chat_display = scrolledtext.ScrolledText(chat_frame, bg='white', fg='black',
+                                                     font=('Arial', 10), state=tk.DISABLED, height=15)
+        self.chat_display.pack(fill=tk.BOTH, expand=True)
+        
+        # Message input
+        input_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        input_frame.pack(fill=tk.X, pady=5)
+        
+        self.message_entry = self.create_styled_entry(input_frame, width=50)
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        self.create_styled_button(input_frame, "Send", self.send_chat_message, width=8).pack(side=tk.RIGHT)
+    
+    def show_your_turn_screen(self, current_phrase):
+        self.clear_frame()
+        
+        # Header
+        header_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        header_frame.pack(fill=tk.X, pady=10)
+        
+        lobby_title = self.current_lobby[:20] + "..." if self.current_lobby and len(self.current_lobby) > 20 else self.current_lobby
+        title_label = self.create_styled_label(header_frame, f"Lobby {lobby_title}", 14, 'white')
+        title_label.pack(side=tk.LEFT)
+        
+        self.create_styled_button(header_frame, "Leave", self.leave_lobby, bg_color='#d32f2f').pack(side=tk.RIGHT)
+        
+        # Game area
+        game_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        game_frame.pack(fill=tk.BOTH, expand=True, pady=20)
+        
+        # Current phrase display
+        phrase_frame = tk.Frame(game_frame, bg='#4a4a4a', relief=tk.RAISED, bd=2)
+        phrase_frame.pack(fill=tk.X, pady=10, padx=20)
+        
+        # Fix: Only show "Start with a phrase" if that's the current phrase, else show the label and phrase
+        if current_phrase == "Start with a phrase":
+            self.create_styled_label(phrase_frame, current_phrase, 14, '#ffd700').pack(pady=10)
+        else:
+            self.create_styled_label(phrase_frame, "The current phrase is:", 12, 'white').pack(pady=5)
+            phrase_label = self.create_styled_label(phrase_frame, current_phrase, 14, '#ffd700')
+            phrase_label.pack(pady=10)
+        
+        # Input area
+        input_frame = tk.Frame(game_frame, bg='#2c2c2c')
+        input_frame.pack(pady=20)
+        
+        self.phrase_entry = self.create_styled_entry(input_frame, width=40)
+        self.phrase_entry.pack(side=tk.LEFT, padx=5)
+        
+        self.create_styled_button(input_frame, "Send", self.send_phrase).pack(side=tk.LEFT, padx=5)
 
-    def join_lobby(self):
-        lobby_id = self.lobby_id_entry.get().strip()
-        if lobby_id == "ID Lobby per entrare...":
-            messagebox.showerror("Errore", "Inserisci un ID lobby valido.")
+    def show_not_your_turn_screen(self):
+        self.clear_frame()
+        # Header
+        header_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        header_frame.pack(fill=tk.X, pady=10)
+        lobby_title = self.current_lobby[:20] + "..." if self.current_lobby and len(self.current_lobby) > 20 else self.current_lobby
+        title_label = self.create_styled_label(header_frame, f"Lobby {lobby_title}", 14, 'white')
+        title_label.pack(side=tk.LEFT)
+        self.create_styled_button(header_frame, "Leave", self.leave_lobby, bg_color='#d32f2f').pack(side=tk.RIGHT)
+        # Waiting area
+        wait_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        wait_frame.pack(expand=True)
+        # No emoji here
+        self.create_styled_label(wait_frame, "Wait for the other players to finish their turn", 14, 'white').pack()
+
+    def show_match_end_screen(self, final_story):
+        self.clear_frame()
+        # Header
+        header_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        header_frame.pack(fill=tk.X, pady=10)
+        lobby_title = self.current_lobby[:20] + "..." if self.current_lobby and len(self.current_lobby) > 20 else self.current_lobby
+        title_label = self.create_styled_label(header_frame, f"Lobby {lobby_title}", 14, 'white')
+        title_label.pack(side=tk.LEFT)
+        self.create_styled_button(header_frame, "Leave", self.leave_lobby, bg_color='#d32f2f').pack(side=tk.RIGHT)
+        # Results area
+        results_frame = tk.Frame(self.main_frame, bg='#2c2c2c')
+        results_frame.pack(fill=tk.BOTH, expand=True, pady=20, padx=20)
+        # No emoji here
+        self.create_styled_label(results_frame, "Match Completed!", 16, '#ffd700').pack(pady=10)
+        self.create_styled_label(results_frame, "Here is the story of the phrase:", 12, 'white').pack(pady=5)
+        
+        # Story display
+        story_display = scrolledtext.ScrolledText(results_frame, bg='white', fg='black',
+                                                font=('Arial', 12), state=tk.DISABLED, height=10)
+        story_display.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        story_display.config(state=tk.NORMAL)
+        story_display.insert(tk.END, final_story)
+        story_display.config(state=tk.DISABLED)
+        # If host, allow to start a new match
+        if self.is_host:
+            btn_frame = tk.Frame(results_frame, bg='#2c2c2c')
+            btn_frame.pack(pady=10)
+            self.create_styled_button(btn_frame, "Start a new match", self.start_match).pack(side=tk.LEFT, padx=5)
+
+    def add_chat_message(self, username, message):
+        if hasattr(self, 'chat_display'):
+            self.chat_display.config(state=tk.NORMAL)
+            self.chat_display.insert(tk.END, f"{username}: {message}\n")
+            self.chat_display.config(state=tk.DISABLED)
+            self.chat_display.see(tk.END)
+    
+    def send_chat_message(self):
+        # This is a placeholder - the server doesn't seem to have chat functionality
+        # In a real implementation, you'd send the message to the server
+        if hasattr(self, 'message_entry'):
+            message = self.message_entry.get().strip()
+            if message:
+                self.add_chat_message(self.player_name, message)
+                self.message_entry.delete(0, tk.END)
+    
+    def send_phrase(self):
+        if hasattr(self, 'phrase_entry'):
+            phrase = self.phrase_entry.get().strip()
+            if phrase:
+                # Format: OP_SPEAK (111) + length (2 digits) + phrase
+                length = len(phrase)
+                if length >= 100:
+                    messagebox.showerror("Error", "Phrase too long (max 99 characters)")
+                    return
+                message = f"111 {length:02d} {phrase}"
+                self.send_message(message)
+                self.phrase_entry.delete(0, tk.END)
+    
+    def start_match(self):
+        # Ask the host for the direction before sending the start match message
+        def send_with_direction(direction):
+            # direction: 1 for clockwise, 0 for counter-clockwise
+            message = f"110 {direction}"
+            self.send_message(message)
+
+        # Only the host should be able to start the match, but double-check
+        if not self.is_host:
+            messagebox.showerror("Error", "Only the host can start the match.")
             return
-        if len(lobby_id) != 36:
-            messagebox.showerror("Errore", "Inserisci un ID lobby valido (36 caratteri).")
-            return
-        self.sock.sendall(f"101 {lobby_id}".encode())
-        self.last_action = "join_lobby"
-        # Disabilita i tasti solo dopo conferma dal server (in handle_feedback)
+
+        # Show a simple dialog to choose direction
+        direction_dialog = tk.Toplevel(self.root)
+        direction_dialog.title("Choose Match Direction")
+        direction_dialog.geometry("300x150")
+        direction_dialog.configure(bg='#2c2c2c')
+        direction_dialog.grab_set()
+        direction_dialog.transient(self.root)
+
+        label = self.create_styled_label(direction_dialog, "Choose the direction of the match:", 12, 'white')
+        label.pack(pady=20)
+
+        btn_frame = tk.Frame(direction_dialog, bg='#2c2c2c')
+        btn_frame.pack(pady=10)
+
+        def choose_clockwise():
+            send_with_direction(1)
+            direction_dialog.destroy()
+
+        def choose_counter():
+            send_with_direction(0)
+            direction_dialog.destroy()
+
+        self.create_styled_button(btn_frame, "Clockwise", choose_clockwise, bg_color='#4caf50').pack(side=tk.LEFT, padx=10)
+        self.create_styled_button(btn_frame, "Counter-Clockwise", choose_counter, bg_color='#2196f3').pack(side=tk.LEFT, padx=10)
 
     def leave_lobby(self):
-        self.sock.sendall(b"103")
-        self.last_action = "leave_lobby"
-        self.is_host = False
-        self.in_lobby = False
-        self.update_start_btn_state()
-        self.disable_turn_entry()
-        self.create_btn.config(state='normal')    # Riattiva dopo uscita
-        self.join_btn.config(state='normal')      # Riattiva dopo uscita
+        message = "103"
+        self.send_message(message)
+    
+    def on_closing(self):
+        self.disconnect_from_server()
+        self.root.destroy()
+    
+    def run(self):
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.mainloop()
 
-    def start_match(self):
-        # Chiedi direzione (clockwise/counterclockwise)
-        direction = messagebox.askquestion("Direzione", "Vuoi giocare in senso orario?", icon='question')
-        clockwise = "1" if direction == "yes" else "0"
-        self.sock.sendall(f"110 {clockwise}".encode())
-        self.start_btn.config(state='disabled')
+    def in_lobby_window(self):
+        # Returns True if currently in a lobby window (host or non-host)
+        # You can refine this check if needed
+        return hasattr(self, 'chat_display') and self.chat_display.winfo_exists()
 
-    def enable_turn_entry(self):
-        self.turn_entry.config(state='normal')
-        self.turn_send_btn.config(state='normal')
-        self.turn_entry.delete(0, tk.END)
-        self.turn_entry.insert(0, "Scrivi la tua frase...")
-        self.turn_entry.config(fg='grey')
-
-    def disable_turn_entry(self):
-        self.turn_entry.delete(0, tk.END)
-        self.turn_entry.insert(0, "Scrivi la tua frase...")
-        self.turn_entry.config(state='disabled', fg='grey')
-        self.turn_send_btn.config(state='disabled')
-
-    def send_turn_phrase(self):
-        phrase = self.turn_entry.get().strip()
-        if not phrase or phrase == "Scrivi la tua frase...":
-            return
-        if len(phrase) > 30:
-            messagebox.showerror("Errore", "La frase può essere lunga massimo 30 caratteri.")
-            return
-        # Comando: 111 <len> <frase>
-        self.sock.sendall(f"111 {len(phrase):02d} {phrase}".encode())
-        self.append_text(f"[Frase inviata]: {phrase}")
-        # RIMOSSO: self.disable_turn_entry()
-        # Ora la disabilitazione viene gestita solo da handle_feedback
-
-    def send_custom(self):
-        msg = self.send_entry.get().strip()
-        if not msg or msg == "Scrivi richiesta TCP...":
-            return
-        try:
-            if self.sock:
-                self.sock.sendall(msg.encode())
-                self.append_text(f"[Inviato manualmente]: {msg}")
-        except Exception as e:
-            messagebox.showerror("Errore", f"Errore invio: {e}")
-        self.send_entry.delete(0, tk.END)
-
-    def on_close(self):
-        try:
-            if self.sock:
-                self.sock.close()
-        except:
-            pass
-        self.master.destroy()
-
-    def update_start_btn_state(self):
-        if self.is_host and self.in_lobby:
-            self.start_btn.config(state='normal')
-        else:
-            self.start_btn.config(state='disabled')
+    def print_lobby_message(self, msg):
+        # Print a message in the chat_display in gray italics, without code
+        if hasattr(self, 'chat_display'):
+            self.chat_display.config(state=tk.NORMAL)
+            self.chat_display.insert(tk.END, f"{msg}\n")
+            # Tag the last inserted message as 'server'
+            start_idx = self.chat_display.index("end-1l linestart")
+            end_idx = self.chat_display.index("end-1l lineend")
+            self.chat_display.tag_add("server", start_idx, end_idx)
+            self.chat_display.tag_config("server", foreground="#888888", font=('Arial', 10, 'italic'))
+            self.chat_display.config(state=tk.DISABLED)
+            self.chat_display.see(tk.END)
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    gui = ClientGUI(root)
-    root.mainloop()
+    client = GameClient()
+    client.run()
