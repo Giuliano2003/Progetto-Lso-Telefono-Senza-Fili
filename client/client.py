@@ -456,12 +456,44 @@ class GameClient:
         results_frame.pack(fill=tk.BOTH, expand=True, pady=20, padx=20)
         self.create_styled_label(results_frame, "Match Completed!", 16, '#ffd700').pack(pady=10)
         self.create_styled_label(results_frame, "Here is the story of the phrase:", 12, 'white').pack(pady=5)
-        story_display = scrolledtext.ScrolledText(results_frame, bg='white', fg='black',
-                                                font=('Arial', 12), state=tk.DISABLED, height=10)
-        story_display.pack(fill=tk.BOTH, expand=True, pady=10)
-        story_display.config(state=tk.NORMAL)
-        story_display.insert(tk.END, final_story)
-        story_display.config(state=tk.DISABLED)
+
+        # Enhanced story timeline, splitting by '->'
+        timeline_frame = tk.Frame(results_frame, bg='#2c2c2c')
+        timeline_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        # Split by '->', trim whitespace, skip empty
+        steps = [part.strip() for part in final_story.strip().split('->') if part.strip()]
+        colors = ['#f5f5f5', '#e3f2fd']
+        border_colors = ['#ffd700', '#2196f3']
+        for idx, phrase in enumerate(steps):
+            step_frame = tk.Frame(
+                timeline_frame,
+                bg=colors[idx % 2],
+                highlightbackground=border_colors[idx % 2],
+                highlightthickness=2,
+                bd=0,
+                relief=tk.RIDGE
+            )
+            step_frame.pack(fill=tk.X, pady=6, padx=10, anchor='w')
+            # Numbered step
+            step_label = tk.Label(
+                step_frame,
+                text=f"Step {idx+1}",
+                bg=colors[idx % 2],
+                fg='#333',
+                font=('Arial', 10, 'bold')
+            )
+            step_label.pack(side=tk.LEFT, padx=(10, 15), pady=8)
+            # Phrase text
+            phrase_label = tk.Label(
+                step_frame,
+                text=phrase,
+                bg=colors[idx % 2],
+                fg='#222',
+                font=('Arial', 12, 'italic'),
+                wraplength=600,
+                justify=tk.LEFT
+            )
+            phrase_label.pack(side=tk.LEFT, padx=5, pady=8)
         if self.is_host:
             btn_frame = tk.Frame(results_frame, bg='#2c2c2c')
             btn_frame.pack(pady=10)
