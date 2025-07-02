@@ -243,17 +243,7 @@ class GameClient:
         self.password_entry.config(show="*")
         self.password_entry.pack(pady=5)
         
-        # Language selection
-        self.create_styled_label(login_frame, "Language").pack(pady=5)
-        self.language_var = tk.StringVar(value="en")
-        lang_frame = tk.Frame(login_frame, bg='#2c2c2c')
-        lang_frame.pack(pady=5)
-        
-        languages = [("English", "en"), ("Italian", "it"), ("Spanish", "es"), ("French", "fr")]
-        for text, code in languages:
-            tk.Radiobutton(lang_frame, text=text, variable=self.language_var, value=code,
-                          bg='#2c2c2c', fg='white', selectcolor='#4a4a4a',
-                          activebackground='#2c2c2c', activeforeground='white').pack(side=tk.LEFT, padx=5)
+        # Removed language selection and Anonymous login
         
         # Buttons
         btn_frame = tk.Frame(login_frame, bg='#2c2c2c')
@@ -261,7 +251,7 @@ class GameClient:
         
         self.create_styled_button(btn_frame, "Play!", self.login).pack(side=tk.LEFT, padx=5)
         self.create_styled_button(btn_frame, "Sign Up", self.show_signup_screen, bg_color='#6a6a6a').pack(side=tk.LEFT, padx=5)
-        self.create_styled_button(btn_frame, "Anonymous", self.anonymous_login, bg_color='#8a8a8a').pack(side=tk.LEFT, padx=5)
+        # Removed Anonymous login button
     
     def show_signup_screen(self):
         self.clear_frame()
@@ -289,7 +279,7 @@ class GameClient:
         lang_frame = tk.Frame(signup_frame, bg='#2c2c2c')
         lang_frame.pack(pady=5)
         
-        languages = [("English", "en"), ("Italian", "it"), ("Spanish", "es"), ("French", "fr")]
+        languages = [("English", "en"), ("Italian", "it"), ("Spanish", "es"), ("French", "fr"), ("German", "de")]
         for text, code in languages:
             tk.Radiobutton(lang_frame, text=text, variable=self.signup_language_var, value=code,
                           bg='#2c2c2c', fg='white', selectcolor='#4a4a4a',
@@ -325,19 +315,6 @@ class GameClient:
             messagebox.showerror("Error", "Please enter username and password")
             return
         message = f"201 {language} {username} {password}"
-        self.send_message(message)
-    
-    def anonymous_login(self):
-        if not self.connected:
-            if not self.connect_to_server():
-                return
-        username = self.username_entry.get().strip()
-        language = self.language_var.get()
-        if not username:
-            messagebox.showerror("Error", "Please enter a username")
-            return
-        self.player_name = username
-        message = f"200 {language} {username}"
         self.send_message(message)
     
     def show_home_screen(self):
