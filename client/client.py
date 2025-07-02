@@ -51,14 +51,23 @@ class ClientGUI:
         self.lang_combo['values'] = list(LANGUAGES.keys())
         self.lang_combo.grid(row=0, column=0, padx=(0, 10))
 
-        self.entry = tk.Entry(self.user_frame, width=25, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2)
+        self.entry = tk.Entry(self.user_frame, width=15, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2)
         self.entry.grid(row=0, column=1, padx=(0, 10))
-        self.entry.insert(0, "Inserisci username...")
+        self.entry.insert(0, "Username...")
         self.entry.bind("<FocusIn>", self.clear_username_placeholder)
         self.entry.bind("<FocusOut>", self.restore_username_placeholder)
 
+        self.pw_entry = tk.Entry(self.user_frame, width=15, fg='grey', font=self.font_main, relief=tk.GROOVE, bd=2, show="*")
+        self.pw_entry.grid(row=0, column=2, padx=(0, 10))
+        self.pw_entry.insert(0, "Password...")
+        self.pw_entry.bind("<FocusIn>", self.clear_pw_placeholder)
+        self.pw_entry.bind("<FocusOut>", self.restore_pw_placeholder)
+
+        self.signup_btn = tk.Button(self.user_frame, text="Signup", command=self.signup, font=self.font_btn, bg="#43d17a", fg="white", activebackground="#2fa75a", width=10, relief=tk.RAISED, bd=2)
+        self.signup_btn.grid(row=0, column=3, padx=(0, 5))
+
         self.login_btn = tk.Button(self.user_frame, text="Login", command=self.login, font=self.font_btn, bg="#4f8cff", fg="white", activebackground="#357ae8", width=10, relief=tk.RAISED, bd=2)
-        self.login_btn.grid(row=0, column=2)
+        self.login_btn.grid(row=0, column=4)
 
         # Lobby actions frame
         self.lobby_frame = tk.Frame(master, bg="#f0f4f8")
@@ -127,14 +136,24 @@ class ClientGUI:
 
     # Placeholder handlers
     def clear_username_placeholder(self, event):
-        if self.entry.get() == "Inserisci username...":
+        if self.entry.get() == "Username...":
             self.entry.delete(0, tk.END)
             self.entry.config(fg='black')
 
     def restore_username_placeholder(self, event):
         if not self.entry.get():
-            self.entry.insert(0, "Inserisci username...")
+            self.entry.insert(0, "Username...")
             self.entry.config(fg='grey')
+
+    def clear_pw_placeholder(self, event):
+        if self.pw_entry.get() == "Password...":
+            self.pw_entry.delete(0, tk.END)
+            self.pw_entry.config(fg='black', show="*")
+
+    def restore_pw_placeholder(self, event):
+        if not self.pw_entry.get():
+            self.pw_entry.insert(0, "Password...")
+            self.pw_entry.config(fg='grey', show="*")
 
     def clear_lobbyid_placeholder(self, event):
         if self.lobby_id_entry.get() == "ID Lobby per entrare...":
@@ -200,8 +219,19 @@ class ClientGUI:
         code = lines[0]
         # Feedback in base all'ultima azione
         if code == "200":
-            if self.last_action == "login":
+            if self.last_action == "signup":
+                messagebox.showinfo("Signup", "Registrazione effettuata con successo! Ora puoi fare login.")
+            elif self.last_action == "login":
                 messagebox.showinfo("Login", "Login effettuato con successo!")
+                self.lobbies_btn.config(state='normal')
+                self.create_btn.config(state='normal')
+                self.join_btn.config(state='normal')
+                self.leave_btn.config(state='normal')
+                self.login_btn.config(state='disabled')
+                self.signup_btn.config(state='disabled')
+                self.entry.config(state='disabled')
+                self.pw_entry.config(state='disabled')
+                self.lang_combo.config(state='disabled')
             elif self.last_action == "create_lobby":
                 messagebox.showinfo("Lobby", "Lobby creata con successo!")
                 self.create_btn.config(state='disabled')
@@ -256,10 +286,14 @@ class ClientGUI:
             else:
                 self.disable_turn_entry()
 
-    def login(self):
+    def signup(self):
         username = self.entry.get().strip()
-        if username == "Inserisci username...":
+        password = self.pw_entry.get().strip()
+        if username == "Username..." or not username:
             messagebox.showerror("Errore", "Inserisci un username valido.")
+            return
+        if password == "Password..." or not password:
+            messagebox.showerror("Errore", "Inserisci una password valida.")
             return
         if not (5 <= len(username) <= 15):
             messagebox.showerror("Errore", "Username deve essere tra 5 e 15 caratteri.")
@@ -267,16 +301,21 @@ class ClientGUI:
         lang_name = self.lang_var.get()
         lang_code = LANGUAGES.get(lang_name, "it")
         self.connect()
-        # Invia la lingua selezionata insieme all'username
-        self.sock.sendall(f"200 {lang_code} {username}".encode())
+        self.sock.sendall(f"201 {lang_code} {username} {password}".encode())
+        self.last_action = "signup"
+
+    def login(self):
+        username = self.entry.get().strip()
+        password = self.pw_entry.get().strip()
+        if username == "Username..." or not username:
+            messagebox.showerror("Errore", "Inserisci un username valido.")
+            return
+        if password == "Password..." or not password:
+            messagebox.showerror("Errore", "Inserisci una password valida.")
+            return
+        self.connect()
+        self.sock.sendall(f"202 {username} {password}".encode())
         self.username = username
-        self.lobbies_btn.config(state='normal')
-        self.create_btn.config(state='normal')
-        self.join_btn.config(state='normal')
-        self.leave_btn.config(state='normal')
-        self.login_btn.config(state='disabled')
-        self.entry.config(state='disabled')
-        self.lang_combo.config(state='disabled')
         self.last_action = "login"
 
     def get_lobbies(self):

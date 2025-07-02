@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <uuid/uuid.h>
 #include <glib-2.0/glib.h>
+#include <sqlite3.h>
 #include "translator.h"
 
 #define PORT 8080
@@ -23,8 +24,13 @@
 #define OP_START_MATCH 110
 #define OP_SPEAK 111
 #define OP_ANON_LOGIN 200
+#define OP_SIGNUP 201
+#define OP_LOGIN 202
 
 const char* translator_url = "http://libretranslate:5000/translate";
+const char* db_path = "users.db";
+
+sqlite3* db = NULL;
 
 typedef struct Lobby Lobby;
 typedef struct Match Match;
@@ -203,6 +209,90 @@ void sanitize_username(char *buffer) {
     buffer[write_pos] = '\0';
 }
 
+// DB helpers
+int db_init() {
+    int rc = sqlite3_open(db_path, &db);
+    if (rc) {
+        fprintf(stderr, "Can't open DB: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+    const char* sql = "CREATE TABLE IF NOT EXISTS users ("
+                      "uuid TEXT PRIMARY KEY,"
+                      "username TEXT UNIQUE NOT NULL,"
+                      "password TEXT NOT NULL,"
+                      "language TEXT NOT NULL);";
+    char* err = NULL;
+    rc = sqlite3_exec(db, sql, 0, 0, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", err);
+        sqlite3_free(err);
+        return 1;
+    }
+    return 0;
+}
+
+int db_signup(const char* username, const char* password, const char* language, char* out_uuid) {
+    // Generate UUID
+    uuid_t id;
+    uuid_generate_random(id);
+    uuid_unparse(id, out_uuid);
+    const char* sql = "INSERT INTO users (uuid, username, password, language) VALUES (?, ?, ?, ?);";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return 2;
+    sqlite3_bind_text(stmt, 1, out_uuid, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, username, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, password, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, language, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc == SQLITE_DONE) return 0;
+    return 1; // already exists or error
+}
+
+int db_login(const char* username, const char* password, char* out_uuid, char* out_language) {
+    const char* sql = "SELECT uuid, password, language FROM users WHERE username = ?;";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return 2;
+    sqlite3_bind_text(stmt, 1, username, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        const char* db_uuid = (const char*)sqlite3_column_text(stmt, 0);
+        const char* db_pass = (const char*)sqlite3_column_text(stmt, 1);
+        const char* db_lang = (const char*)sqlite3_column_text(stmt, 2);
+        if (strcmp(password, db_pass) == 0) {
+            strncpy(out_uuid, db_uuid, 36);
+            out_uuid[36] = '\0';
+            strncpy(out_language, db_lang, 2);
+            out_language[2] = '\0';
+            sqlite3_finalize(stmt);
+            return 0;
+        }
+        sqlite3_finalize(stmt);
+        return 1; // wrong password
+    }
+    sqlite3_finalize(stmt);
+    return 2; // not found
+}
+
+// Helper to check if a username is already logged in
+bool is_username_logged_in(const char* username) {
+    GHashTableIter iter;
+    gpointer key, value;
+    pthread_mutex_lock(&global_players_mutex);
+    g_hash_table_iter_init(&iter, players);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        Player* p = (Player*)value;
+        if (strcmp(p->username, username) == 0) {
+            pthread_mutex_unlock(&global_players_mutex);
+            return true;
+        }
+    }
+    pthread_mutex_unlock(&global_players_mutex);
+    return false;
+}
+
 void *handle_client(void *arg)
 {
     int client_socket = *(int *)arg;
@@ -224,6 +314,81 @@ void *handle_client(void *arg)
         }
         switch (op_number)
         {
+            case OP_SIGNUP: {
+                // Format: 201 <lang> <username> <password>
+                char lang[3], username[32], password[32], uuid[37];
+                int n = sscanf(buffer+4, "%2s %31s %31s", lang, username, password);
+                if (n != 3) {
+                    char * msg = "400\nUsage: 201 <lang> <username> <password>";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                sanitize_username(username);
+                if (strlen(username) < 5 || strlen(username) > 15) {
+                    char * msg = "400\nUsername must be 5-15 chars";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                int res = db_signup(username, password, lang, uuid);
+                if (res == 0) {
+                    char * msg = "200\nSignup successful!";
+                    send(client_socket, msg, strlen(msg), 0);
+                } else {
+                    char * msg = "400\nUsername already exists";
+                    send(client_socket, msg, strlen(msg), 0);
+                }
+                break;
+            }
+            case OP_LOGIN: {
+                // Format: 202 <username> <password>
+                char username[32], password[32], lang[3], uuid[37];
+                int n = sscanf(buffer+4, "%31s %31s", username, password);
+                if (n != 2) {
+                    char * msg = "400\nUsage: 202 <username> <password>";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                sanitize_username(username);
+                if (is_username_logged_in(username)) {
+                    char * msg = "400\nUser already logged in from another client";
+                    send(client_socket, msg, strlen(msg), 0);
+                    break;
+                }
+                int res = db_login(username, password, uuid, lang);
+                if (res == 0) {
+                    if (p) {
+                        char * msg = "400\nAlready logged in!";
+                        send(client_socket, msg, strlen(msg), 0);
+                        break;
+                    }
+                    p = g_new(Player, 1);
+                    strncpy(p->id, uuid, 36);
+                    p->id[36] = '\0';
+                    strcpy(p->username, username);
+                    p->socket = client_socket;
+                    p->lobby = NULL;
+                    p->isHost = false;
+                    strncpy(p->language, lang, 2);
+                    p->language[2] = '\0';
+                    pthread_mutex_init(&(p->socket_mutex), NULL);
+                    pthread_mutex_lock(&global_players_mutex);
+                    g_hash_table_insert(players, g_strdup(p->id), p);
+                    pthread_mutex_unlock(&global_players_mutex);
+
+                    sprintf(buffer, "200\nLogin successful! Your username is %s\n", p->username);
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, buffer, strlen(buffer), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    printf("User logged in %s (%s) --> %s\n", p->username, p->id, p->language);
+                } else if (res == 1) {
+                    char * msg = "400\nWrong password";
+                    send(client_socket, msg, strlen(msg), 0);
+                } else {
+                    char * msg = "400\nUser not found";
+                    send(client_socket, msg, strlen(msg), 0);
+                }
+                break;
+            }
             case OP_ANON_LOGIN: {
                 if (p) {
                     char * msg = "400\nYou are already authenticated!";
@@ -607,53 +772,59 @@ void *handle_client(void *arg)
     }
 
     close(client_socket);
-    printf("Player %s (%s) disconnesso.\n", p->username, p->id);
-
-    if (p->lobby) {
-        if (p->isHost) {
-            g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
-            g_queue_foreach(p->lobby->queue, lobby_broadcast_disconnection, p);
-            pthread_mutex_lock(&lobbies_mutex);
-            g_hash_table_remove(lobbies, p->lobby->id);
-            pthread_mutex_unlock(&lobbies_mutex);
-            p->lobby = NULL;
-            p->isHost = false;
-        } else {
-            if (g_queue_find(p->lobby->queue, p)){
-                pthread_mutex_lock(&(p->lobby->players_mutex));
-                g_queue_pop_head(p->lobby->queue);
-                pthread_mutex_unlock(&(p->lobby->players_mutex));
-                p->lobby = NULL;
-            }
-            else
-            {
+    if (p) {
+        printf("Player %s (%s) disconnesso.\n", p->username, p->id);
+    
+        if (p->lobby) {
+            if (p->isHost) {
                 g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
-                p->lobby->match->terminated = true;
-                pthread_mutex_lock(&(p->lobby->players_mutex));
-                p->lobby->players = g_list_remove(p->lobby->players, p);
-                if (!g_queue_is_empty(p->lobby->queue)){
-                    Player *queue_player = g_queue_pop_head(p->lobby->queue);
-                    p->lobby->players = g_list_append(p->lobby->players, queue_player);
-                    char success_message[] = "200\nWelcome to the lobby";
-                    pthread_mutex_lock(&(queue_player->socket_mutex));
-                    send(queue_player->socket, success_message, sizeof(success_message), 0);
-                    pthread_mutex_unlock(&(queue_player->socket_mutex));
-                }
-                pthread_mutex_unlock(&(p->lobby->players_mutex));
+                g_queue_foreach(p->lobby->queue, lobby_broadcast_disconnection, p);
+                pthread_mutex_lock(&lobbies_mutex);
+                g_hash_table_remove(lobbies, p->lobby->id);
+                pthread_mutex_unlock(&lobbies_mutex);
                 p->lobby = NULL;
+                p->isHost = false;
+            } else {
+                if (g_queue_find(p->lobby->queue, p)){
+                    pthread_mutex_lock(&(p->lobby->players_mutex));
+                    g_queue_pop_head(p->lobby->queue);
+                    pthread_mutex_unlock(&(p->lobby->players_mutex));
+                    p->lobby = NULL;
+                }
+                else
+                {
+                    g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
+                    p->lobby->match->terminated = true;
+                    pthread_mutex_lock(&(p->lobby->players_mutex));
+                    p->lobby->players = g_list_remove(p->lobby->players, p);
+                    if (!g_queue_is_empty(p->lobby->queue)){
+                        Player *queue_player = g_queue_pop_head(p->lobby->queue);
+                        p->lobby->players = g_list_append(p->lobby->players, queue_player);
+                        char success_message[] = "200\nWelcome to the lobby";
+                        pthread_mutex_lock(&(queue_player->socket_mutex));
+                        send(queue_player->socket, success_message, sizeof(success_message), 0);
+                        pthread_mutex_unlock(&(queue_player->socket_mutex));
+                    }
+                    pthread_mutex_unlock(&(p->lobby->players_mutex));
+                    p->lobby = NULL;
+                }
             }
         }
+    
+        pthread_mutex_lock(&global_players_mutex);
+        g_hash_table_remove(players, p->id);
+        pthread_mutex_unlock(&global_players_mutex);
     }
-
-    pthread_mutex_lock(&global_players_mutex);
-    g_hash_table_remove(players, p->id);
-    pthread_mutex_unlock(&global_players_mutex);
 
     pthread_exit(NULL);
 }
 
 int main()
 {
+    if (db_init() != 0) {
+        fprintf(stderr, "Failed to initialize DB\n");
+        exit(EXIT_FAILURE);
+    }
     players = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, delete_player);
     lobbies = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, delete_lobby);
 

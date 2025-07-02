@@ -2,7 +2,7 @@ CC = gcc
 
 CFLAGS = -Wall -g
 
-LIBS = -luuid -lcurl
+LIBS = -luuid -lcurl -lsqlite3
 
 GLIB_FLAGS = $(shell pkg-config --cflags --libs glib-2.0)
 
