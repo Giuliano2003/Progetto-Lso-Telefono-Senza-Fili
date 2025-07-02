@@ -140,7 +140,7 @@ void lobby_broadcast_joined(gpointer player, gpointer ssender) {
     }
     char * message = "A08\nA player joined the lobby";
     pthread_mutex_lock(&(p->socket_mutex));
-    printf("sto inviando il messaggio a %s\n", p->username);
+    printf("[INFO] Sending join message to %s\n", p->username);
     send(p->socket, message, strlen(message), 0);
     pthread_mutex_unlock(&(p->socket_mutex));
 }
@@ -156,7 +156,7 @@ void lobby_broadcast_disconnection(gpointer player, gpointer ssender) {
         "A02\nThe host left, leaving the lobby" :
         "A03\nA player left the lobby";
     pthread_mutex_lock(&(p->socket_mutex));
-    printf("sto inviando il messaggio a %s\n", p->username);
+    printf("[INFO] Notifying %s about disconnection\n", p->username);
     send(p->socket, message, strlen(message), 0);
     pthread_mutex_unlock(&(p->socket_mutex));
     if(sender->isHost){
@@ -165,7 +165,7 @@ void lobby_broadcast_disconnection(gpointer player, gpointer ssender) {
         if (!p->lobby->match->terminated) {
             char * match_terminated = "A12\nThe match is terminated";
             pthread_mutex_lock(&(p->socket_mutex));
-            printf("sto inviando il messaggio a %s\n", p->username);
+            printf("[INFO] Notifying %s about match termination\n", p->username);
             send(p->socket, match_terminated, strlen(match_terminated), 0);
             pthread_mutex_unlock(&(p->socket_mutex));
         }
@@ -175,7 +175,6 @@ void lobby_broadcast_disconnection(gpointer player, gpointer ssender) {
 void word_history(gpointer word_step, gpointer bufferContext) {
     char* step = (char*) word_step;
     BufferContext* context = (BufferContext*) bufferContext;
-    
     int written = snprintf(context->buffer + context->idx, strlen(step)+5, "%s -> ", step);
     context->idx += written;
 }
@@ -216,7 +215,7 @@ void match_turn_broadcast(gpointer player, gpointer turnContext) {
     }
     strncat(message, body, sizeof(message) - strlen(message) - 1);
     pthread_mutex_lock(&(p->socket_mutex));
-    printf("\nSto mandando questo messaggio: %s\n", message);
+    printf("[INFO] Sending turn/match message to %s: %s\n", p->username, message);
     send(p->socket, message, strlen(message), 0);
     pthread_mutex_unlock(&(p->socket_mutex));
 }
@@ -228,7 +227,7 @@ pthread_mutex_t lobbies_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t global_players_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void print_lobby(const Lobby* lobby){
-    printf("Lobby:id %s \n",lobby->id);
+    printf("[INFO] Lobby created: id %s\n",lobby->id);
 }
 
 void sanitize_username(char *buffer) {
@@ -244,11 +243,10 @@ void sanitize_username(char *buffer) {
     buffer[write_pos] = '\0';
 }
 
-// DB helpers
 int db_init() {
     int rc = sqlite3_open(db_path, &db);
     if (rc) {
-        fprintf(stderr, "Can't open DB: %s\n", sqlite3_errmsg(db));
+        fprintf(stderr, "[ERROR] Can't open DB: %s\n", sqlite3_errmsg(db));
         return 1;
     }
     const char* sql = "CREATE TABLE IF NOT EXISTS users ("
@@ -259,15 +257,15 @@ int db_init() {
     char* err = NULL;
     rc = sqlite3_exec(db, sql, 0, 0, &err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "SQL error: %s\n", err);
+        fprintf(stderr, "[ERROR] SQL error: %s\n", err);
         sqlite3_free(err);
         return 1;
     }
+    printf("[INFO] Database initialized successfully\n");
     return 0;
 }
 
 int db_signup(const char* username, const char* password, const char* language, char* out_uuid) {
-    // Generate UUID
     uuid_t id;
     uuid_generate_random(id);
     uuid_unparse(id, out_uuid);
@@ -311,7 +309,6 @@ int db_login(const char* username, const char* password, char* out_uuid, char* o
     return 2; // not found
 }
 
-// Helper to check if a username is already logged in
 bool is_username_logged_in(const char* username) {
     GHashTableIter iter;
     gpointer key, value;
@@ -334,6 +331,7 @@ void *handle_client(void *arg)
     free(arg);
     char buffer[1024];
     Player *p = NULL;
+    printf("[INFO] New client connected (socket %d)\n", client_socket);
     while (1)
     {
         int bytes = recv(client_socket, buffer, sizeof(buffer), 0);
@@ -345,7 +343,7 @@ void *handle_client(void *arg)
         op[3] = '\0';
         int op_number=atoi(op);
         if(p){
-            printf("Player %s (%s): %s\n", p->username, p->id, buffer);
+            printf("[INFO] Player %s (%s): %s\n", p->username, p->id, buffer);
         }
         switch (op_number)
         {
@@ -355,21 +353,25 @@ void *handle_client(void *arg)
                 int n = sscanf(buffer+4, "%2s %31s %31s", lang, username, password);
                 if (n != 3) {
                     char * msg = "Z01\nUsage: 201 <lang> <username> <password>";
+                    printf("[WARN] Signup failed: bad request format\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 sanitize_username(username);
                 if (strlen(username) < 5 || strlen(username) > 15) {
                     char * msg = "Z01\nUsername must be 5-15 chars";
+                    printf("[WARN] Signup failed: username length invalid\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 int res = db_signup(username, password, lang, uuid);
                 if (res == 0) {
                     char * msg = "B01\nSignup successful!";
+                    printf("[INFO] Signup successful for user %s\n", username);
                     send(client_socket, msg, strlen(msg), 0);
                 } else {
                     char * msg = "Z02\nUsername already exists";
+                    printf("[WARN] Signup failed: username %s already exists\n", username);
                     send(client_socket, msg, strlen(msg), 0);
                 }
                 break;
@@ -380,12 +382,14 @@ void *handle_client(void *arg)
                 int n = sscanf(buffer+4, "%31s %31s", username, password);
                 if (n != 2) {
                     char * msg = "Z01\nUsage: 202 <username> <password>";
+                    printf("[WARN] Login failed: bad request format\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 sanitize_username(username);
                 if (is_username_logged_in(username)) {
                     char * msg = "Z02\nUser already logged in from another client";
+                    printf("[WARN] Login failed: user %s already logged in\n", username);
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
@@ -393,6 +397,7 @@ void *handle_client(void *arg)
                 if (res == 0) {
                     if (p) {
                         char * msg = "Z02\nAlready logged in!";
+                        printf("[WARN] Login failed: already logged in\n");
                         send(client_socket, msg, strlen(msg), 0);
                         break;
                     }
@@ -414,24 +419,27 @@ void *handle_client(void *arg)
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, buffer, strlen(buffer), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
-                    printf("User logged in %s (%s) --> %s\n", p->username, p->id, p->language);
+                    printf("[INFO] User logged in %s (%s) --> %s\n", p->username, p->id, p->language);
                 } else if (res == 1) {
                     char * msg = "Z03\nWrong password";
+                    printf("[WARN] Login failed: wrong password for %s\n", username);
                     send(client_socket, msg, strlen(msg), 0);
                 } else {
                     char * msg = "Z03\nUser not found";
+                    printf("[WARN] Login failed: user %s not found\n", username);
                     send(client_socket, msg, strlen(msg), 0);
                 }
                 break;
             }
             case OP_CREATE_LOBBY: {
-
                 if (!p) {
                     char * msg = "Z03\nYou must authenticate first!";
+                    printf("[WARN] Create lobby failed: unauthenticated\n");
                     send(client_socket, msg, strlen(msg), 0);
                 }
                 if(p->lobby){
                     char error_messagge[] = "Z01\nYou cannot create a lobby since you already are in one";
+                    printf("[WARN] Create lobby failed: already in a lobby\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -439,6 +447,7 @@ void *handle_client(void *arg)
                 }
                 if(g_hash_table_size(lobbies) + 1 > MAX_LOBBIES){
                     char error_messagge[] = "Z00\nWe have not room for other lobbies at the moment. Try later!";
+                    printf("[WARN] Create lobby failed: max lobbies reached\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket,error_messagge,sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -466,7 +475,7 @@ void *handle_client(void *arg)
                 char success_message[64];
                 snprintf(success_message, sizeof(success_message), "A00\n%s", lobby->id);
                 print_lobby(lobby);
-                printf("Lobby created, number of lobbies: %d\n", g_hash_table_size(lobbies));
+                printf("[INFO] Lobby created, number of lobbies: %d\n", g_hash_table_size(lobbies));
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, success_message, strlen(success_message), 0);
                 pthread_mutex_unlock(&(p->socket_mutex));
@@ -475,6 +484,7 @@ void *handle_client(void *arg)
             case OP_JOIN_LOBBY : {
                 if (!p) {
                     char * msg = "Z03\nYou must authenticate first!";
+                    printf("[WARN] Join lobby failed: unauthenticated\n");
                     send(client_socket, msg, strlen(msg), 0);
                 }
                 char lobby_id[37];
@@ -482,6 +492,7 @@ void *handle_client(void *arg)
                 lobby_id[36]='\0';
                 if(p->lobby){
                     char error_messagge[] = "Z01\nYou are already in a lobby";
+                    printf("[WARN] Join lobby failed: already in a lobby\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -491,6 +502,7 @@ void *handle_client(void *arg)
                 Lobby *lobby = (Lobby *) g_hash_table_lookup(lobbies, lobby_id);
                 if(!lobby){
                     char error_messagge[] = "Z01\nLobby not found";
+                    printf("[WARN] Join lobby failed: lobby not found\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -498,6 +510,7 @@ void *handle_client(void *arg)
                 }
                 if (!lobby->match->terminated) {
                     char error_messagge[] = "A07\nThe match is already started, you are in a queue now";
+                    printf("[INFO] Player %s queued for lobby %s (match already started)\n", p->username, lobby_id);
                     pthread_mutex_lock(&(lobby->players_mutex));
                     g_queue_push_tail(lobby->queue, p);
                     p->lobby = lobby;
@@ -509,6 +522,7 @@ void *handle_client(void *arg)
                 }
                 if (g_list_length(lobby->players) + 1 > lobby->max_players) {
                     char error_messagge[] = "A04\nThe lobby is full, you are in a queue now";
+                    printf("[INFO] Player %s queued for lobby %s (lobby full)\n", p->username, lobby_id);
                     pthread_mutex_lock(&(lobby->players_mutex));
                     g_queue_push_tail(lobby->queue, p);
                     p->lobby = lobby;
@@ -525,6 +539,7 @@ void *handle_client(void *arg)
                 pthread_mutex_unlock(&(lobby->players_mutex));
                 
                 char response_message[] = "A01\nWelcome to the lobby";
+                printf("[INFO] Player %s joined lobby %s\n", p->username, lobby_id);
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, response_message, sizeof(response_message), 0);
                 pthread_mutex_unlock(&(p->socket_mutex));
@@ -535,25 +550,26 @@ void *handle_client(void *arg)
             case OP_GET_LOBBIES: {
                 if (!p) {
                     char * msg = "Z03\nYou must authenticate first!";
+                    printf("[WARN] Get lobbies failed: unauthenticated\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 if (g_hash_table_size(lobbies) <= 0) {
-                    printf("Non ci sono lobby !\n");
+                    printf("[INFO] No lobbies to show\n");
                     char error_messagge[] = "A05";
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
-                printf("Number of lobbies to show: %d\n", g_hash_table_size(lobbies));
-                char* buffer = malloc(g_hash_table_size(lobbies) * 200 + 5);  // ~200 char per lobby, +5 for "A05\n"
+                printf("[INFO] Number of lobbies to show: %d\n", g_hash_table_size(lobbies));
+                char* buffer = malloc(g_hash_table_size(lobbies) * 200 + 5);
                 BufferContext bufferContext = {buffer, 4};
-                memcpy(buffer, "A05\n", 4); // Add A05\n at the beginning
+                memcpy(buffer, "A05\n", 4);
                 buffer[4] = '\0';
                 g_hash_table_foreach(lobbies, fill_buffer, &bufferContext);  
                 buffer[bufferContext.idx] = '\0';
-                printf("Buffer to send is:\n%s\n", buffer);
+                printf("[INFO] Sending lobby list to %s\n", p->username);
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, buffer, strlen(buffer), 0);
                 pthread_mutex_unlock(&(p->socket_mutex));
@@ -563,17 +579,20 @@ void *handle_client(void *arg)
             case OP_LEAVE_LOBBY: {
                 if (!p) {
                     char * msg = "Z03\nYou must authenticate first!";
+                    printf("[WARN] Leave lobby failed: unauthenticated\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 if (!p->lobby) {
                     char error_messagge[] = "Z01\nYou are not in a lobby";
+                    printf("[WARN] Leave lobby failed: not in a lobby\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
                 if (p->isHost) {
+                    printf("[INFO] Host %s leaving and deleting lobby %s\n", p->username, p->lobby->id);
                     g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
                     g_queue_foreach(p->lobby->queue, lobby_broadcast_disconnection, p);
                     pthread_mutex_lock(&lobbies_mutex);
@@ -587,6 +606,7 @@ void *handle_client(void *arg)
                         g_queue_pop_head(p->lobby->queue);
                         pthread_mutex_unlock(&(p->lobby->players_mutex));
                         char success_message[] = "A06\nYou left the queue";
+                        printf("[INFO] Player %s left the queue\n", p->username);
                         pthread_mutex_lock(&(p->socket_mutex));
                         send(p->socket, success_message, sizeof(success_message), 0);
                         pthread_mutex_unlock(&(p->socket_mutex));
@@ -594,6 +614,7 @@ void *handle_client(void *arg)
                     }
                     else
                     {
+                        printf("[INFO] Player %s leaving lobby %s\n", p->username, p->lobby->id);
                         g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
                         p->lobby->match->terminated = true;
                         pthread_mutex_lock(&(p->lobby->players_mutex));
@@ -602,6 +623,7 @@ void *handle_client(void *arg)
                             Player *queue_player = g_queue_pop_head(p->lobby->queue);
                             p->lobby->players = g_list_append(p->lobby->players, queue_player);
                             char success_message[] = "A01\nWelcome to the lobby";
+                            printf("[INFO] Player %s joined from queue\n", queue_player->username);
                             pthread_mutex_lock(&(queue_player->socket_mutex));
                             send(queue_player->socket, success_message, sizeof(success_message), 0);
                             pthread_mutex_unlock(&(queue_player->socket_mutex));
@@ -619,11 +641,13 @@ void *handle_client(void *arg)
             case OP_START_MATCH: {
                 if (!p) {
                     char * msg = "Z03\nYou must authenticate first!";
+                    printf("[WARN] Start match failed: unauthenticated\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 if (!p->isHost) {
                     char error_messagge[] = "Z01\nYou are not the host";
+                    printf("[WARN] Start match failed: not host\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -631,6 +655,7 @@ void *handle_client(void *arg)
                 }
                 if (g_list_length(p->lobby->players) < MIN_PLAYERS) {
                     char error_messagge[] = "Z01\nMinimum 4 players required";
+                    printf("[WARN] Start match failed: not enough players\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -652,6 +677,7 @@ void *handle_client(void *arg)
                     p->lobby->players = g_list_prepend(p->lobby->players, p->lobby->host);
                     pthread_mutex_unlock(&(p->lobby->players_mutex));
                 }
+                printf("[INFO] Match started in lobby %s (host: %s)\n", p->lobby->id, p->username);
                 TurnContext context = {p, false, NULL};
                 g_list_foreach(p->lobby->players, match_turn_broadcast, &context);
                 break;
@@ -659,11 +685,13 @@ void *handle_client(void *arg)
             case OP_SPEAK: {
                 if (!p) {
                     char * msg = "Z03\nYou must authenticate first!";
+                    printf("[WARN] Speak failed: unauthenticated\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 if (!p->lobby) {
                     char error_messagge[] = "Z01\nYou are not in a lobby";
+                    printf("[WARN] Speak failed: not in a lobby\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -671,6 +699,7 @@ void *handle_client(void *arg)
                 }
                 if (p->lobby->match->terminated) {
                     char error_messagge[] = "Z01\nThe match is terminated";
+                    printf("[WARN] Speak failed: match terminated\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -679,6 +708,7 @@ void *handle_client(void *arg)
                 GList* player_node = g_list_nth(p->lobby->players, p->lobby->match->turn);
                 if (p->id != ((Player*) player_node->data)->id) {
                     char error_messagge[] = "Z01\nIs not your turn";
+                    printf("[WARN] Speak failed: not player's turn\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -689,10 +719,11 @@ void *handle_client(void *arg)
                 strncpy(word_len, buffer+4, 2);
                 word_len[2] = '\0';
                 int len = atoi(word_len);
-                printf("Inserted word length is %d\n", len);
+                printf("[INFO] Inserted word length is %d\n", len);
 
                 if (len >= MAX_LENGTH) {
                     char error_messagge[] = "Z01\nThe maximum length is 30";
+                    printf("[WARN] Speak failed: word too long\n");
                     pthread_mutex_lock(&(p->socket_mutex));
                     send(client_socket, error_messagge, sizeof(error_messagge), 0);
                     pthread_mutex_unlock(&(p->socket_mutex));
@@ -702,7 +733,7 @@ void *handle_client(void *arg)
                 strncpy(word, buffer+7, len);
                 word[len] = '\0';
                 
-                printf("The parsed word is: %s\n", word);
+                printf("[INFO] The parsed word is: %s\n", word);
                 char* translated_phrase = malloc(MAX_PLAYERS*(MAX_LENGTH + 1));
 
                 GList* nextNode = player_node->next;
@@ -724,11 +755,11 @@ void *handle_client(void *arg)
                 } else {
                     GSList* prev_node = g_slist_last(p->lobby->match->word);
                     char* current_phrase = malloc(MAX_LENGTH*MAX_PLAYERS);
-                    printf("The concatenation is %s %s\n", (char*) prev_node->data, word);
+                    printf("[INFO] The concatenation is %s %s\n", (char*) prev_node->data, word);
                     snprintf(current_phrase, MAX_LENGTH*MAX_PLAYERS, "%s %s", (char*) prev_node->data, word);
                     free(prev_node->data);
                     prev_node->data = current_phrase;
-                    printf("The current phrase is %s\n", (char*) prev_node->data);
+                    printf("[INFO] The current phrase is %s\n", (char*) prev_node->data);
                     if (nextNode) {
                         if (translate(p->lobby->translator, (char*) prev_node->data, p->language, nextPlayer->language, translated_phrase, MAX_PLAYERS*(MAX_LENGTH+1)) == 0) {
                             p->lobby->match->word = g_slist_append(p->lobby->match->word, translated_phrase);
@@ -741,6 +772,7 @@ void *handle_client(void *arg)
                 p->lobby->match->turn++;
                 if(p->lobby->match->turn >= g_list_length(p->lobby->players)) {
                     p->lobby->match->terminated = true;
+                    printf("[INFO] Match terminated in lobby %s\n", p->lobby->id);
                 }
                 TurnContext context = {nextPlayer, p->lobby->match->terminated, p->lobby->match->word};
                 g_list_foreach(p->lobby->players, match_turn_broadcast, &context);
@@ -750,6 +782,7 @@ void *handle_client(void *arg)
                         Player* queue_player = (Player*) g_queue_pop_head(p->lobby->queue);
                         p->lobby->players = g_list_append(p->lobby->players, queue_player);
                         char success_message[] = "A01\nWelcome to the lobby";
+                        printf("[INFO] Player %s joined from queue after match\n", queue_player->username);
                         pthread_mutex_lock(&(queue_player->socket_mutex));
                         send(queue_player->socket, success_message, sizeof(success_message), 0);
                         pthread_mutex_unlock(&(queue_player->socket_mutex));
@@ -761,10 +794,12 @@ void *handle_client(void *arg)
             default: {
                 if (!p) {
                     char * msg = "Z03\nYou must authenticate first!";
+                    printf("[WARN] Unknown request: unauthenticated\n");
                     send(client_socket, msg, strlen(msg), 0);
                     break;
                 }
                 char default_message[] = "Z00\nUnknown request";
+                printf("[WARN] Unknown request from %s\n", p->username);
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, default_message, sizeof(default_message), 0);
                 pthread_mutex_unlock(&(p->socket_mutex));
@@ -774,10 +809,10 @@ void *handle_client(void *arg)
 
     close(client_socket);
     if (p) {
-        printf("Player %s (%s) disconnesso.\n", p->username, p->id);
-    
+        printf("[INFO] Player %s (%s) disconnected.\n", p->username, p->id);
         if (p->lobby) {
             if (p->isHost) {
+                printf("[INFO] Host %s disconnected, deleting lobby %s\n", p->username, p->lobby->id);
                 g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
                 g_queue_foreach(p->lobby->queue, lobby_broadcast_disconnection, p);
                 pthread_mutex_lock(&lobbies_mutex);
@@ -794,6 +829,7 @@ void *handle_client(void *arg)
                 }
                 else
                 {
+                    printf("[INFO] Player %s disconnected from lobby %s\n", p->username, p->lobby->id);
                     g_list_foreach(p->lobby->players, lobby_broadcast_disconnection, p);
                     p->lobby->match->terminated = true;
                     pthread_mutex_lock(&(p->lobby->players_mutex));
@@ -802,6 +838,7 @@ void *handle_client(void *arg)
                         Player *queue_player = g_queue_pop_head(p->lobby->queue);
                         p->lobby->players = g_list_append(p->lobby->players, queue_player);
                         char success_message[] = "A01\nWelcome to the lobby";
+                        printf("[INFO] Player %s joined from queue after disconnect\n", queue_player->username);
                         pthread_mutex_lock(&(queue_player->socket_mutex));
                         send(queue_player->socket, success_message, sizeof(success_message), 0);
                         pthread_mutex_unlock(&(queue_player->socket_mutex));
@@ -811,7 +848,6 @@ void *handle_client(void *arg)
                 }
             }
         }
-    
         pthread_mutex_lock(&global_players_mutex);
         g_hash_table_remove(players, p->id);
         pthread_mutex_unlock(&global_players_mutex);
@@ -823,7 +859,7 @@ void *handle_client(void *arg)
 int main()
 {
     if (db_init() != 0) {
-        fprintf(stderr, "Failed to initialize DB\n");
+        fprintf(stderr, "[FATAL] Failed to initialize DB\n");
         exit(EXIT_FAILURE);
     }
     players = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, delete_player);
@@ -836,7 +872,7 @@ int main()
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == 0)
     {
-        perror("socket failed");
+        perror("[FATAL] socket failed");
         exit(EXIT_FAILURE);
     }
 
@@ -844,12 +880,12 @@ int main()
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("bind failed");
+        perror("[FATAL] bind failed");
         exit(EXIT_FAILURE);
     }
     listen(server_fd, 3);
 
-    printf("Server in ascolto su porta %d\n", PORT);
+    printf("[INFO] Server listening on port %d\n", PORT);
 
     while (1)
     {
