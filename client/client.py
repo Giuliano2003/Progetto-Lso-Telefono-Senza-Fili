@@ -143,9 +143,6 @@ class GameClient:
             # Joined lobby (not host)
             self.is_host = False
             self.root.after(0, self.show_lobby_screen)
-        elif status_code == "A03" or status_code == "A06":
-            # Player left lobby or left queue
-            self.current_lobby = None
         elif status_code == "A02":
             # Host left, lobby closed
             self.current_lobby = None
@@ -177,6 +174,13 @@ class GameClient:
                     final_story = '\n'.join(lines[idx+1:])
                     break
             self.root.after(0, lambda: self.show_match_end_screen(final_story))
+        elif status_code == "A03":
+            # Switch to lobby screen only if in a match window
+            if self.in_match_window():
+                if self.is_host:
+                    self.root.after(0, self.show_lobby_host_screen)
+                else:
+                    self.root.after(0, self.show_lobby_screen)
         elif status_code == "A04" or status_code == "A07":
             # Enqueued in queue
             messagebox.showinfo("Queue", "You have been added to the queue for this lobby.")
@@ -642,6 +646,25 @@ class GameClient:
         # Returns True if currently in a lobby window (host or non-host)
         # You can refine this check if needed
         return hasattr(self, 'chat_display') and self.chat_display.winfo_exists()
+
+    def in_match_window(self):
+        # Returns True if currently in a match-related window (your turn, not your turn, or match end)
+        # Heuristic: check for widgets unique to those screens
+        # Check for phrase_entry (your turn), or label with waiting message (not your turn), or story display (match end)
+        # This is a simple heuristic, adapt as needed
+        for widget in self.main_frame.winfo_children():
+            # Your turn: phrase_entry exists
+            if hasattr(self, 'phrase_entry') and self.phrase_entry.winfo_exists():
+                return True
+            # Not your turn: look for waiting label
+            if isinstance(widget, tk.Frame):
+                for child in widget.winfo_children():
+                    if isinstance(child, tk.Label) and "Wait for the other players" in child.cget("text"):
+                        return True
+            # Match end: look for story_display
+            if hasattr(self, 'story_display') and self.story_display.winfo_exists():
+                return True
+        return False
 
     def print_lobby_message(self, msg):
         # Print a message in the chat_display in gray italics, without code
