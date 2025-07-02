@@ -12,7 +12,7 @@
 #include "translator.h"
 
 #define PORT 8080
-#define MIN_PLAYERS 2
+#define MIN_PLAYERS 4
 #define MAX_PLAYERS 10
 #define MAX_LOBBIES 5
 #define MAX_LENGTH 30
@@ -36,6 +36,7 @@
 // LOBBIES A05
 // QUEUE LEFT A06
 // QUEUE JOINED A07
+// PLAYER JOINED A08
 // MATCH STARTED A10
 // YOUR TURN A11
 // MATCH TERMINATED A12
@@ -129,6 +130,19 @@ void fill_buffer(gpointer key, gpointer value, gpointer bufferContext) {
                           lobby->max_players,
                           (int)g_list_length(lobby->players));
     bufCont->idx += written;
+}
+
+void lobby_broadcast_joined(gpointer player, gpointer ssender) {
+    Player* p = (Player*) player;
+    Player* sender = (Player*) ssender;
+    if (strcmp(p->id, sender->id) == 0) {
+        return; //do not send to sender
+    }
+    char * message = "A08\nA player joined the lobby";
+    pthread_mutex_lock(&(p->socket_mutex));
+    printf("sto inviando il messaggio a %s\n", p->username);
+    send(p->socket, message, strlen(message), 0);
+    pthread_mutex_unlock(&(p->socket_mutex));
 }
 
 void lobby_broadcast_disconnection(gpointer player, gpointer ssender) {
@@ -514,6 +528,8 @@ void *handle_client(void *arg)
                 pthread_mutex_lock(&(p->socket_mutex));
                 send(client_socket, response_message, sizeof(response_message), 0);
                 pthread_mutex_unlock(&(p->socket_mutex));
+
+                g_list_foreach(p->lobby->players, lobby_broadcast_joined, p);
                 break;
             }
             case OP_GET_LOBBIES: {
