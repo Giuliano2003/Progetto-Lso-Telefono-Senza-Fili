@@ -323,10 +323,10 @@ class GameClient:
             if hasattr(self, 'lobby_list_frame') and self.lobby_list_frame.winfo_exists():
                 print("[UI] Refreshing lobby list")
                 self.send_message("102")
-                self.lobby_refresh_job = self.root.after(5000, refresh)  # changed from 10000 to 5000
+                self.lobby_refresh_job = self.root.after(5000, refresh)
             else:
                 self.lobby_refresh_job = None
-        self.lobby_refresh_job = self.root.after(5000, refresh)  # changed from 10000 to 5000
+        self.lobby_refresh_job = self.root.after(5000, refresh)
 
     def refresh_lobby_list(self):
         if not hasattr(self, 'lobby_list_frame'):
@@ -457,19 +457,15 @@ class GameClient:
         self.create_styled_label(results_frame, "Match Completed!", 16, '#ffd700').pack(pady=10)
         self.create_styled_label(results_frame, "Here is the story of the phrase:", 12, 'white').pack(pady=5)
 
-        # --- Extract the final phrase after '=>'
         story_part = final_story
         final_phrase = ""
         if "=>" in final_story:
             story_part, final_phrase = final_story.rsplit("=>", 1)
             final_phrase = final_phrase.strip()
             story_part = story_part.strip()
-        # ---
 
-        # Enhanced story timeline, splitting by '->'
         timeline_frame = tk.Frame(results_frame, bg='#2c2c2c')
         timeline_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        # Split by '->', trim whitespace, skip empty
         steps = [part.strip() for part in story_part.strip().split('->') if part.strip()]
         colors = ['#f5f5f5', '#e3f2fd']
         border_colors = ['#ffd700', '#2196f3']
@@ -483,7 +479,6 @@ class GameClient:
                 relief=tk.RIDGE
             )
             step_frame.pack(fill=tk.X, pady=6, padx=10, anchor='w')
-            # Numbered step
             step_label = tk.Label(
                 step_frame,
                 text=f"Step {idx+1}",
@@ -492,7 +487,6 @@ class GameClient:
                 font=('Arial', 10, 'bold')
             )
             step_label.pack(side=tk.LEFT, padx=(10, 15), pady=8)
-            # Phrase text
             phrase_label = tk.Label(
                 step_frame,
                 text=phrase,
@@ -504,7 +498,6 @@ class GameClient:
             )
             phrase_label.pack(side=tk.LEFT, padx=5, pady=8)
 
-        # --- Show the final phrase as a box like the other steps, but labeled "Final phrase"
         if final_phrase:
             final_frame = tk.Frame(
                 timeline_frame,
@@ -533,12 +526,10 @@ class GameClient:
                 justify=tk.LEFT
             )
             phrase_label.pack(side=tk.LEFT, padx=5, pady=8)
-        # ---
 
         if self.is_host:
             btn_frame = tk.Frame(results_frame, bg='#2c2c2c')
             btn_frame.pack(pady=10)
-            # Use lambda to force clockwise direction on restart
             self.create_styled_button(btn_frame, "Start a new match", lambda: self.start_match(force_clockwise=True)).pack(side=tk.LEFT, padx=5)
 
     def add_chat_message(self, username, message):
@@ -579,7 +570,6 @@ class GameClient:
             print("[ERROR] Only the host can start the match.")
             messagebox.showerror("Error", "Only the host can start the match.")
             return
-        # If forced, always send clockwise and skip dialog
         if force_clockwise:
             send_with_direction(1)
             return
