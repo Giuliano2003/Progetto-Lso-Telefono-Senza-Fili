@@ -201,6 +201,17 @@ void match_turn_broadcast(gpointer player, gpointer turnContext) {
             phrase[phrase_idx-4] = '\0';
         }
         snprintf(body + header_len, sizeof(body) - header_len, "%s\n", phrase);
+
+        // --- Add translation of the phrase in the player's language ---
+        char* final_phrase = NULL;
+        GSList* last = g_slist_last(context->word);
+        final_phrase = (char*) last->data;
+        char translated[MAX_LENGTH*MAX_PLAYERS+50] = {0};
+        if (translate(p->lobby->translator, final_phrase, context->player_turn->language, p->language, translated, sizeof(translated)) == 0) {
+            size_t body_len = strlen(body);
+            snprintf(body + body_len, sizeof(body) - body_len, "=> %s\n", translated);
+        }
+        // -------------------------------------------------------------
     } else {
         if (p->id == context->player_turn->id) {
             GSList* node = g_slist_last(context->word);
@@ -661,6 +672,14 @@ void *handle_client(void *arg)
                     pthread_mutex_unlock(&(p->socket_mutex));
                     break;
                 }
+                if (!p->lobby->match->terminated) {
+                    char error_messagge[] = "Z01\nWait for the match to finish to restart it";
+                    printf("[WARN] The host tried to restart the match before match was terminated\n");
+                    pthread_mutex_lock(&(p->socket_mutex));
+                    send(client_socket, error_messagge, sizeof(error_messagge), 0);
+                    pthread_mutex_unlock(&(p->socket_mutex));
+                    break;
+                }
                 char clockwise[1];
                 strncpy(clockwise,buffer+4,1);
                 clockwise[1]='\0';
@@ -741,7 +760,7 @@ void *handle_client(void *arg)
                 if (nextNode) {
                     nextPlayer = (Player*) nextNode->data;
                 } else {
-                    nextPlayer = (Player*) p->lobby->players->data;
+                    nextPlayer = p;
                 }
 
                 if (p->lobby->match->turn == 0) {

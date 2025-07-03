@@ -323,10 +323,10 @@ class GameClient:
             if hasattr(self, 'lobby_list_frame') and self.lobby_list_frame.winfo_exists():
                 print("[UI] Refreshing lobby list")
                 self.send_message("102")
-                self.lobby_refresh_job = self.root.after(10000, refresh)
+                self.lobby_refresh_job = self.root.after(5000, refresh)  # changed from 10000 to 5000
             else:
                 self.lobby_refresh_job = None
-        self.lobby_refresh_job = self.root.after(10000, refresh)
+        self.lobby_refresh_job = self.root.after(5000, refresh)  # changed from 10000 to 5000
 
     def refresh_lobby_list(self):
         if not hasattr(self, 'lobby_list_frame'):
@@ -457,11 +457,20 @@ class GameClient:
         self.create_styled_label(results_frame, "Match Completed!", 16, '#ffd700').pack(pady=10)
         self.create_styled_label(results_frame, "Here is the story of the phrase:", 12, 'white').pack(pady=5)
 
+        # --- Extract the final phrase after '=>'
+        story_part = final_story
+        final_phrase = ""
+        if "=>" in final_story:
+            story_part, final_phrase = final_story.rsplit("=>", 1)
+            final_phrase = final_phrase.strip()
+            story_part = story_part.strip()
+        # ---
+
         # Enhanced story timeline, splitting by '->'
         timeline_frame = tk.Frame(results_frame, bg='#2c2c2c')
         timeline_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         # Split by '->', trim whitespace, skip empty
-        steps = [part.strip() for part in final_story.strip().split('->') if part.strip()]
+        steps = [part.strip() for part in story_part.strip().split('->') if part.strip()]
         colors = ['#f5f5f5', '#e3f2fd']
         border_colors = ['#ffd700', '#2196f3']
         for idx, phrase in enumerate(steps):
@@ -494,10 +503,43 @@ class GameClient:
                 justify=tk.LEFT
             )
             phrase_label.pack(side=tk.LEFT, padx=5, pady=8)
+
+        # --- Show the final phrase as a box like the other steps, but labeled "Final phrase"
+        if final_phrase:
+            final_frame = tk.Frame(
+                timeline_frame,
+                bg='#e8f5e9',
+                highlightbackground='#4caf50',
+                highlightthickness=2,
+                bd=0,
+                relief=tk.RIDGE
+            )
+            final_frame.pack(fill=tk.X, pady=10, padx=10, anchor='w')
+            final_label = tk.Label(
+                final_frame,
+                text="Final phrase",
+                bg='#e8f5e9',
+                fg='#388e3c',
+                font=('Arial', 10, 'bold')
+            )
+            final_label.pack(side=tk.LEFT, padx=(10, 15), pady=8)
+            phrase_label = tk.Label(
+                final_frame,
+                text=final_phrase,
+                bg='#e8f5e9',
+                fg='#222',
+                font=('Arial', 12, 'italic'),
+                wraplength=600,
+                justify=tk.LEFT
+            )
+            phrase_label.pack(side=tk.LEFT, padx=5, pady=8)
+        # ---
+
         if self.is_host:
             btn_frame = tk.Frame(results_frame, bg='#2c2c2c')
             btn_frame.pack(pady=10)
-            self.create_styled_button(btn_frame, "Start a new match", self.start_match).pack(side=tk.LEFT, padx=5)
+            # Use lambda to force clockwise direction on restart
+            self.create_styled_button(btn_frame, "Start a new match", lambda: self.start_match(force_clockwise=True)).pack(side=tk.LEFT, padx=5)
 
     def add_chat_message(self, username, message):
         if hasattr(self, 'chat_display'):
@@ -527,7 +569,7 @@ class GameClient:
                 self.send_message(message)
                 self.phrase_entry.delete(0, tk.END)
     
-    def start_match(self):
+    def start_match(self, force_clockwise=False):
         print("[MATCH] Host starting match")
         def send_with_direction(direction):
             message = f"110 {direction}"
@@ -536,6 +578,10 @@ class GameClient:
         if not self.is_host:
             print("[ERROR] Only the host can start the match.")
             messagebox.showerror("Error", "Only the host can start the match.")
+            return
+        # If forced, always send clockwise and skip dialog
+        if force_clockwise:
+            send_with_direction(1)
             return
         direction_dialog = tk.Toplevel(self.root)
         direction_dialog.title("Choose Match Direction")
