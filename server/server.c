@@ -201,8 +201,6 @@ void match_turn_broadcast(gpointer player, gpointer turnContext) {
             phrase[phrase_idx-4] = '\0';
         }
         snprintf(body + header_len, sizeof(body) - header_len, "%s\n", phrase);
-
-        // --- Add translation of the phrase in the player's language ---
         char* final_phrase = NULL;
         GSList* last = g_slist_last(context->word);
         final_phrase = (char*) last->data;
@@ -211,7 +209,6 @@ void match_turn_broadcast(gpointer player, gpointer turnContext) {
             size_t body_len = strlen(body);
             snprintf(body + body_len, sizeof(body) - body_len, "=> %s\n", translated);
         }
-        // -------------------------------------------------------------
     } else {
         if (p->id == context->player_turn->id) {
             GSList* node = g_slist_last(context->word);
